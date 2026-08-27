@@ -54,6 +54,12 @@ const VetoRule = z.object({
   max_rounds: z.number().int().positive().optional(),
 });
 
+/**
+ * `.strict()` is the whole point. Zod strips unknown keys by default, so a typo
+ * in an escalation rule would silently delete the rule — and a deleted
+ * escalation rule means auto-merging exactly the case it was written to catch.
+ * A misspelled rule must break policy loading, loudly, at startup.
+ */
 const EscalateRule = z.object({
   first_n_merges: z.number().int().nonnegative().optional(),
   origin: Origin.optional(),
@@ -65,6 +71,8 @@ const EscalateRule = z.object({
   public_api_change: z.boolean().optional(),
   acceptance_unmet: z.literal("any").optional(),
   path_touched: z.string().optional(),
+}).strict().refine((rule) => Object.values(rule).some((v) => v !== undefined), {
+  message: "an empty escalation rule matches nothing; remove it or fill it in",
 });
 
 const Sensor = z.object({

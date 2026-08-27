@@ -18,7 +18,10 @@ const DEVOPS = { commit_message: "feat: change", pr_title: "Change", ready: true
 
 const CHAIN = (n: number): ScriptedStep[] => Array.from({ length: n }).flatMap(() => [
   { role: "planner" as const, text: fencedJson(PLAN) },
-  { role: "builder" as const, act: (cwd: string) => writeFileSync(join(cwd, "src/greet.js"), `// ${Math.random()}\n`) },
+  // Leaves the suite green: a branch that breaks it must not merge, and that is
+  // a different test.
+  { role: "builder" as const, act: (cwd: string) => writeFileSync(join(cwd, "src/greet.js"),
+    `// touched ${process.hrtime.bigint()}\nexport function greet(name) {\n  return \`Hello, \${name}!\`;\n}\n`) },
   { role: "adversary" as const, text: fencedJson(PASS) },
   { role: "review" as const, text: fencedJson(PASS) },
   { role: "scribe" as const, text: fencedJson(ENTRY) },
@@ -188,4 +191,96 @@ test("a forge that is down does not take the loop down with it", async () => {
   h.ctx.forge.prStates = () => { throw new Error("gh: API rate limit exceeded"); };
   await assert.doesNotReject(h.pump(2));
   assert.equal(projectOne(readAll(h.paths.eventsFile), "bk-1")?.state, "escalated");
+});
+
+const OPEN_GATE: Partial<Policy> = {
+  merge: { auto: true, max_pending_escalated: 3, escalate_when: [{ origin: "untrusted" }] },
+};
+
+test("a cleared change merges itself, once its own tests pass", async () => {
+  const h = harness(CHAIN(1), OPEN_GATE);
+  addBacklog(h.paths.eventsFile, "bk-1", { text: "work", origin: "trusted", source: "human" });
+  await h.pump(10);
+
+  const task = projectOne(readAll(h.paths.eventsFile), "bk-1") as Task;
+  assert.equal(task.state, "merged");
+  assert.equal((h.ctx.forge as MemoryForge).prs[0].state, "MERGED");
+
+  const merge = readAll(h.paths.eventsFile).find((e) => e.type === "merge");
+  assert.equal((merge as { by: string }).by, "harness");
+  const gate = readAll(h.paths.eventsFile).find((e) => e.type === "merge_gate");
+  assert.deepEqual((gate as { reasons: string[] }).reasons, []);
+});
+
+test("a red branch does not merge, whatever the adversary reported", async () => {
+  // The adversary's account of the tests is a model's account. Nothing reaches
+  // the default branch on an account; this check is the mechanical one.
+  const h = harness([
+    { role: "planner", text: fencedJson(PLAN) },
+    { role: "builder", act: (cwd: string) => writeFileSync(join(cwd, "src/greet.js"), "export const greet = () => 'wrong';\n") },
+    { role: "adversary", text: fencedJson(PASS) },
+    { role: "review", text: fencedJson(PASS) },
+    { role: "scribe", text: fencedJson(ENTRY) },
+    { role: "devops", text: fencedJson(DEVOPS) },
+  ], OPEN_GATE);
+  addBacklog(h.paths.eventsFile, "bk-1", { text: "work", origin: "trusted", source: "human" });
+  await h.pump(10);
+
+  const task = projectOne(readAll(h.paths.eventsFile), "bk-1") as Task;
+  assert.equal(task.state, "escalated");
+  assert.match(task.last_error as string, /tests failed/);
+  assert.notEqual((h.ctx.forge as MemoryForge).prs[0].state, "MERGED");
+});
+
+test("untrusted work is held even with the gate wide open", async () => {
+  const h = harness(CHAIN(1), OPEN_GATE);
+  addBacklog(h.paths.eventsFile, "bk-1", {
+    text: "an issue someone filed", origin: "untrusted", source: "open_issues", fingerprint: "issue:1",
+  });
+  await h.pump(10);
+
+  const task = projectOne(readAll(h.paths.eventsFile), "bk-1") as Task;
+  assert.equal(task.state, "escalated");
+  assert.match(task.last_error as string, /origin is untrusted/);
+  assert.notEqual((h.ctx.forge as MemoryForge).prs[0].state, "MERGED");
+});
+
+test("a draft is never merged by the harness", async () => {
+  const h = harness(CHAIN(1), OPEN_GATE);
+  addBacklog(h.paths.eventsFile, "bk-1", { text: "work", origin: "trusted", source: "human" });
+  await h.pump(8);
+  // Somebody, or something, parked it after the gate cleared.
+  (h.ctx.forge as MemoryForge).prs[0].isDraft = true;
+  const before = projectOne(readAll(h.paths.eventsFile), "bk-1")?.state;
+  await h.pump(2);
+
+  if (before === "awaiting_merge") {
+    const task = projectOne(readAll(h.paths.eventsFile), "bk-1") as Task;
+    assert.equal(task.state, "escalated");
+    assert.match(task.last_error as string, /draft/);
+  }
+});
+
+test("a forge that cannot answer is not treated as consent", async () => {
+  const h = harness(CHAIN(1), OPEN_GATE);
+  addBacklog(h.paths.eventsFile, "bk-1", { text: "work", origin: "trusted", source: "human" });
+  await h.pump(7);
+  h.ctx.forge.mergeability = () => { throw new Error("gh: API rate limit exceeded"); };
+
+  await assert.doesNotReject(h.pump(3));
+  assert.notEqual((h.ctx.forge as MemoryForge).prs[0]?.state, "MERGED");
+});
+
+test("a conflicted pull request waits before it gives up", async () => {
+  const h = harness(CHAIN(1), OPEN_GATE);
+  addBacklog(h.paths.eventsFile, "bk-1", { text: "work", origin: "trusted", source: "human" });
+  await h.pump(7);
+  h.ctx.forge.mergeability = () => ({ mergeable: "CONFLICTING", state: "DIRTY", draft: false });
+  await h.pump(2);
+
+  const events = readAll(h.paths.eventsFile);
+  if (events.some((e) => e.type === "merge_gate" && !e.escalate)) {
+    assert.ok(!events.some((e) => e.type === "merge_blocked"),
+      "GitHub is often still computing right after a push; one look is not a verdict");
+  }
 });

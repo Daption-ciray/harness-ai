@@ -11,12 +11,13 @@ export type TaskState =
   | "verifying"    // built; the verifiers have not all reported yet
   | "scribing"     // verified; the decision entry is not written yet
   | "integrating"  // verified and recorded; needs devops
+  | "awaiting_merge" // pull request open, no escalation rule matched
   | "escalated"    // pull request open, waiting on a human
   | "merged"
   | "failed";
 
 export const ACTIVE_STATES: readonly TaskState[] =
-  ["queued", "planned", "verifying", "scribing", "integrating"];
+  ["queued", "planned", "verifying", "scribing", "integrating", "awaiting_merge"];
 
 /** Waiting on a person rather than on the harness. */
 export const HUMAN_STATES: readonly TaskState[] = ["blocked", "escalated"];

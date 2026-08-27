@@ -12,7 +12,7 @@ Design and rationale: [`SPEC.md`](./SPEC.md).
 
 ## Status
 
-Phases 0-6 complete and verified end to end against a real repository. See
+All seven phases complete and verified end to end against a real repository. See
 `SPEC.md` § 16 for the phase plan.
 
 ## Design
@@ -31,6 +31,16 @@ double. Routing, tiering, scope enforcement, the state machine, git plumbing and
 the whole planner → builder → devops chain are exercised against the doubles
 over a real git repository with a real bare `origin`, so the only thing that
 costs money to test is the adapter itself.
+
+**Auto-merge is earned, and every gate fails closed.** `merge.auto` ships off.
+Turned on, a change still reaches the default branch only if no escalation rule
+matches *and* its own test suite passes when the harness runs it — the
+adversary's report that tests pass is a model's account, and nothing merges on an
+account. A rule the evaluator does not recognise breaks policy loading rather
+than being ignored, because a silently deleted escalation rule auto-merges
+exactly the case it was written to catch. Work whose origin is untrusted never
+merges itself, under any combination of rules. `harness revert <id>` undoes a
+merge the harness made.
 
 **Observability reads from one place.** `trace`, `stats` and the dashboard are
 three renderings of the same pure functions over the event log (`src/report.ts`),
@@ -103,6 +113,8 @@ node bin/harness.ts answer bk-3 "use Auth0"    # unblock a question
 node bin/harness.ts trace bk-3                 # one task's whole life
 node bin/harness.ts stats                      # where the time and allowance went
 node bin/harness.ts ui                         # live dashboard on 127.0.0.1:7777
+node bin/harness.ts digest                     # what happened while you were away
+node bin/harness.ts revert bk-3 "broke prod"   # undo a merge the harness made
 ```
 
 Work reaches the harness two ways: **you ask for it**, or a sensor finds it.

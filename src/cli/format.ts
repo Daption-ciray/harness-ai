@@ -68,6 +68,9 @@ export function describe(event: HarnessEvent): string {
     case "pr_opened":
       return `#${event.number} ${event.draft ? "draft" : "ready"} · ${event.files} files, ${event.lines} lines · ${event.url}`;
     case "ci_result": return `${event.ok ? "green" : "red"} · ${event.summary}`;
+    case "merge_gate":
+      return event.escalate ? `escalated · ${event.reasons.join("; ")}` : "clear to merge";
+    case "merge_blocked": return event.reason;
     case "merge": return `${event.by} · ${event.sha.slice(0, 8)}`;
     case "escalate": return event.reason;
     case "task_failed": return event.reason;

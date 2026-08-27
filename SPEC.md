@@ -570,6 +570,48 @@ yok, build adımı yok: bakılan şey yerel append-only bir dosya ve fazlası `t
 etrafında iskele olurdu. **Yapısı gereği salt okunur** — açık bırakmak harness'ın
 davranışını değiştiremez.
 
+## 11d. Otomatik merge
+
+`merge.auto` **kapalı** gelir. Açıldığında bile bir değişiklik ancak şu üçü
+birden tutarsa `main`'e ulaşır:
+
+1. Hiçbir `escalate_when` kuralı eşleşmemeli
+2. GitHub PR'ı gerçekten merge edilebilir raporlamalı (draft değil, çakışma yok)
+3. **Harness branch'in kendi test komutunu koşmalı ve geçmeli**
+
+Üçüncüsü tartışılmaz. Adversary'nin "testler geçiyor" demesi bir *modelin
+beyanı*. `main`'e hiçbir şey beyanla girmez. Bu, otomatik bir hattın ve bozuk bir
+main'in arasındaki tek mekanik kontrol.
+
+### Değerlendirici baştan sona fail-closed
+
+- **Tanımadığı kural policy yüklemesini kırar.** Zod varsayılan olarak bilinmeyen
+  anahtarları siler — yani `task_clss: risky` yazımı kuralı sessizce yok eder ve
+  tam da yakalamak için yazıldığı vakayı otomatik merge eder. `.strict()` bunu
+  başlangıçta, gürültülü şekilde patlatır.
+- **Boş kural** (`- {}`) hiçbir şeyle eşleşmez → yükleme hatası.
+- **Okunamayan eşik** (`diff_files: "lots"`) escalate eder, atlanmaz.
+- Belirlenemeyen bir olgu asla "güvenli" sonucuna varmaz.
+
+### Asla istisnası olmayan iki kural
+
+- `origin: untrusted` — yabancının yazdığı metin okunmadan `main`'e giremez
+- `quarantined` — hard veto'yu yalnız insan serbest bırakır
+
+### Otonomi kazanılır
+
+`first_n_merges: 20` — ilk 20 merge insana gider. Sistem güveni kazanarak alır,
+hediye olarak değil.
+
+### Geri alma
+
+`harness revert <id> "<neden>"` doğrudan `main`'e push eder. Kasten: bu acil
+durum yolu, ve geri almayı review'dan geçirmek geri alınan şeyin biri düzeltmeyi
+incelerken canlı kalması demek. Revert'ün kendisi de geri alınabilir.
+
+Yalnız **harness'ın merge ettiği** commit'ler bu yolla geri alınabilir. Diğerleri
+bir insanın commit'i ve bu aracın yeniden yazacağı şey değil.
+
 ## 12. Event / trace şeması
 
 Ayrı tracing sistemi yok. `events.jsonl` zaten trace store; eklenen tek şey `trace_id`.

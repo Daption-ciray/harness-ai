@@ -125,10 +125,20 @@ export function apply(task: Task, event: HarnessEvent): Task {
         last_error: event.ok ? task.last_error : (event.error ?? event.subtype),
       });
     case "pr_opened":
+      // The gate decides where this lands; until it speaks, the pull request
+      // exists but nothing has been concluded about it.
+      return next({ pr: { number: event.number, url: event.url, draft: event.draft } });
+    case "merge_gate":
+      // The reason travels with the task, not only in the log. Why a change is
+      // waiting on you is the most useful thing `harness waiting` can tell you,
+      // and reconstructing it from events every time is how it gets lost.
       return next({
-        state: "escalated",
-        pr: { number: event.number, url: event.url, draft: event.draft },
+        state: event.escalate ? "escalated" : "awaiting_merge",
+        last_error: event.escalate ? event.reasons.join("; ") : null,
       });
+    case "merge_blocked":
+      // A blocked merge is not a failure, it is a change that needs a person.
+      return next({ state: "escalated", last_error: event.reason });
     case "merge":
       return next({ state: "merged" });
     case "task_failed":

@@ -8,6 +8,8 @@ import { status } from "../src/cli/status.ts";
 import { trace } from "../src/cli/trace.ts";
 import { stats } from "../src/cli/stats.ts";
 import { ui } from "../src/cli/ui.ts";
+import { revert } from "../src/cli/revert.ts";
+import { digest } from "../src/cli/digest.ts";
 
 const USAGE = `harness — multi-agent development harness
 
@@ -22,6 +24,8 @@ const USAGE = `harness — multi-agent development harness
   harness trace <id>            one task's whole life, as a tree
   harness stats [--days <n>]    where the time and the allowance went
   harness ui [--port <n>]       live dashboard on 127.0.0.1
+  harness digest [--hours <n>]  what happened while you were away
+  harness revert <id> "<why>"   undo a merge the harness made
   harness tasks [--json]         list every task and its state
   harness run [<id>]            advance one task by one stage, in the foreground
   harness cancel <id> "<why>"   retire a task; recorded, never deleted
@@ -34,6 +38,7 @@ const { positionals, values } = parseArgs({
     file: { type: "string" },
     days: { type: "string" },
     port: { type: "string" },
+    hours: { type: "string" },
     untrusted: { type: "boolean", default: false },
     help: { type: "boolean", default: false },
     json: { type: "boolean", default: false },
@@ -79,6 +84,11 @@ try {
     console.log(stats(cwd, values.days ? Number(values.days) : 30));
   } else if (cmd === "ui") {
     await ui(cwd, values.port ? Number(values.port) : 7777);
+  } else if (cmd === "digest") {
+    console.log(digest(cwd, values.hours ? Number(values.hours) : 24));
+  } else if (cmd === "revert") {
+    if (!rest[0]) throw new Error('revert needs a task id: harness revert bk-1 "why"');
+    console.log(revert(cwd, rest[0], rest.slice(1).join(" ") || "no reason given"));
   } else if (cmd === "waiting") {
     console.log(waiting(cwd));
   } else if (cmd === "cancel") {

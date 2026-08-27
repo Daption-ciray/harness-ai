@@ -1,4 +1,6 @@
+import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { cleanEnv } from "./env.ts";
 import { dirname } from "node:path";
 import { DAEMON_TRACE, emit, readAll } from "./events.ts";
 import { sdkRunner, type AgentRunner } from "./agent-runner.ts";
@@ -119,6 +121,85 @@ function reconcilePullRequests(ctx: Tick, tasks: ReturnType<typeof listTasks>): 
   }
 }
 
+/** How long to wait for GitHub to decide a pull request is mergeable. */
+const MERGEABILITY_TIMEOUT_MS = 30 * 60_000;
+
+/**
+ * Runs the branch's own test command before anything is merged.
+ *
+ * The adversary reports that tests pass; that report is a model's account of
+ * what it saw. Nothing reaches the default branch on an account. This is the
+ * one check that is mechanical, and it is the last thing standing between an
+ * automated pipeline and a broken main.
+ */
+function branchTestsPass(ctx: Tick, dir: string): { ok: boolean; detail: string } {
+  const command = ctx.policy.repo.test_cmd;
+  if (!command) return { ok: false, detail: "no test command configured; refusing to merge unverified" };
+  try {
+    execFileSync(command, {
+      cwd: dir, shell: true, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"],
+      env: cleanEnv(), timeout: 15 * 60_000,
+    });
+    return { ok: true, detail: "green" };
+  } catch (e) {
+    const err = e as { signal?: string; stdout?: string; stderr?: string };
+    if (err.signal === "SIGTERM") return { ok: false, detail: "the test command timed out" };
+    return { ok: false, detail: `tests failed: ${`${err.stdout ?? ""}${err.stderr ?? ""}`.trim().slice(-300)}` };
+  }
+}
+
+/**
+ * Merges what the gate cleared. Every precondition must hold; any one of them
+ * failing sends the change to a person rather than through.
+ */
+function attemptMerges(ctx: Tick, tasks: ReturnType<typeof listTasks>): void {
+  for (const task of tasks.filter((t) => t.state === "awaiting_merge")) {
+    if (!task.pr || !task.worktree) {
+      emit(ctx.paths.eventsFile, task.id, "merge_blocked", { reason: "no pull request or worktree to merge" });
+      continue;
+    }
+
+    let status: { mergeable: string; state: string; draft: boolean };
+    try {
+      status = ctx.forge.mergeability(ctx.paths.repoRoot, task.pr.number);
+    } catch (e) {
+      console.error(`could not read #${task.pr.number}: ${(e as Error).message}`);
+      continue; // a forge hiccup is not a verdict
+    }
+
+    if (status.draft) {
+      emit(ctx.paths.eventsFile, task.id, "merge_blocked", { reason: "the pull request is a draft" });
+      continue;
+    }
+    if (status.mergeable !== "MERGEABLE" || !["CLEAN", "UNSTABLE", "HAS_HOOKS"].includes(status.state)) {
+      // UNKNOWN right after creation is normal; GitHub is still computing.
+      const cleared = readAll(ctx.paths.eventsFile)
+        .find((e) => e.trace_id === task.id && e.type === "merge_gate");
+      const waited = cleared ? Date.now() - Date.parse(cleared.ts) : 0;
+      if (waited > MERGEABILITY_TIMEOUT_MS) {
+        emit(ctx.paths.eventsFile, task.id, "merge_blocked", {
+          reason: `GitHub reports ${status.mergeable}/${status.state}; it has not become mergeable`,
+        });
+      }
+      continue;
+    }
+
+    const tests = branchTestsPass(ctx, task.worktree);
+    if (!tests.ok) {
+      emit(ctx.paths.eventsFile, task.id, "merge_blocked", { reason: tests.detail });
+      continue;
+    }
+
+    try {
+      const sha = ctx.forge.mergePr(ctx.paths.repoRoot, task.pr.number);
+      emit(ctx.paths.eventsFile, task.id, "merge", { sha, by: "harness" });
+      console.log(`merged #${task.pr.number} (${task.id}) — tests green, no escalation rule matched`);
+    } catch (e) {
+      emit(ctx.paths.eventsFile, task.id, "merge_blocked", { reason: `merge failed: ${(e as Error).message}` });
+    }
+  }
+}
+
 /** Worktrees are only disposable once a task can no longer be advanced. */
 function reapWorktrees(ctx: Tick, tasks: ReturnType<typeof listTasks>): void {
   for (const task of tasks) {
@@ -165,6 +246,7 @@ export async function tick(ctx: Tick): Promise<void> {
 
   let tasks = listTasks(readAll(ctx.paths.eventsFile));
   reconcilePullRequests(ctx, tasks);
+  attemptMerges(ctx, listTasks(readAll(ctx.paths.eventsFile)));
   tasks = listTasks(readAll(ctx.paths.eventsFile));
   reapWorktrees(ctx, tasks);
 

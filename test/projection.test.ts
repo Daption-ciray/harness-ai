@@ -34,6 +34,7 @@ const happyPath = (): HarnessEvent[] => [
   ev("bk-1", "build_done", { files: ["src/a.ts"], revision: 1 }),
   ev("bk-1", "span_end", span("devops", 0.2)),
   ev("bk-1", "pr_opened", { number: 7, url: "https://x/7", draft: false, sha: "abc", files: 1, lines: 10 }),
+  ev("bk-1", "merge_gate", { escalate: true, reasons: ["merge.auto is off"] }),
   ev("bk-1", "escalate", { reason: "merge.auto is off" }),
 ];
 
@@ -52,7 +53,8 @@ test("state is a fold of the log, never stored", () => {
 
 test("truncating the log at any point yields the state that prefix describes", () => {
   const log = happyPath();
-  const expected = ["queued", "queued", "planned", "planned", "planned", "verifying", "verifying", "escalated", "escalated"];
+  const expected = ["queued", "queued", "planned", "planned", "planned",
+    "verifying", "verifying", "verifying", "escalated", "escalated"];
   for (let i = 0; i < log.length; i++) {
     assert.equal(projectOne(log.slice(0, i + 1), "bk-1")?.state, expected[i], `prefix of length ${i + 1}`);
   }

@@ -16,6 +16,7 @@ import { dirname, relative } from "node:path";
 import { ROLE_TOOLS } from "./roles/tools.ts";
 import { extractJson, runSpan, type SpanResult } from "./spawn.ts";
 import { classify, ladderStartFor, resolveTier } from "./tier.ts";
+import { detectPublicApiChange, evaluateGate } from "./merge.ts";
 import { resolveLease } from "./lease.ts";
 import { concernsFor, currentRevision, detectStall, pendingVerifiers } from "./verify.ts";
 import type { Finding } from "./domain.ts";
@@ -399,6 +400,11 @@ async function scribe(task: Task, ctx: Ctx): Promise<void> {
 }
 
 /** Files the builder touched that the plan did not authorise. */
+/** Merges of harness pull requests so far, which is how autonomy is earned. */
+export function mergeCount(events: ReturnType<typeof readAll>): number {
+  return events.filter((e) => e.type === "merge").length;
+}
+
 export function scopeViolations(files: string[], scope: string[]): string[] {
   return files.filter((f) => !scope.some((g) => matchesGlob(f, g)));
 }
@@ -480,10 +486,21 @@ async function integrate(task: Task, ctx: Ctx): Promise<void> {
     number: pr.number, url: pr.url, draft: !ready, sha,
     files: stat.files, lines: stat.lines,
   });
-  // merge.auto stays off until phase 7, so every change waits for a human here.
-  emit(ctx.paths.eventsFile, task.id, "escalate", {
-    reason: ctx.policy.merge.auto ? "escalation rule matched" : "merge.auto is off — awaiting human review",
-  });
+
+  // A draft never merges itself: devops or a scope violation parked it, and
+  // parking it means a person looks.
+  const gate = ready
+    ? evaluateGate(ctx.policy, task, readAll(ctx.paths.eventsFile), {
+      files, diffLines: stat.lines,
+      mergesSoFar: mergeCount(readAll(ctx.paths.eventsFile)),
+      publicApiChange: detectPublicApiChange(git(["diff", `${base}...HEAD`], dir)),
+    })
+    : { escalate: true, reasons: ["the pull request is a draft"] };
+
+  emit(ctx.paths.eventsFile, task.id, "merge_gate", gate);
+  if (gate.escalate) {
+    emit(ctx.paths.eventsFile, task.id, "escalate", { reason: gate.reasons.join("; ") });
+  }
 }
 
 /** Blockers from a hard veto, which lead the pull request rather than trailing it. */

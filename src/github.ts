@@ -17,6 +17,10 @@ export type Forge = {
   prStates(cwd: string): Map<number, string>;
   createPr(cwd: string, opts: CreatePrOptions): PullRequest;
   addLabels(cwd: string, prNumber: number, labels: string[]): void;
+  /** Whether GitHub considers this pull request safe to merge right now. */
+  mergeability(cwd: string, prNumber: number): { mergeable: string; state: string; draft: boolean };
+  /** Squash-merges and returns the resulting commit, or throws. */
+  mergePr(cwd: string, prNumber: number): string;
   openIssues(cwd: string, limit?: number): Issue[];
 };
 
@@ -72,6 +76,18 @@ export const ghForge: Forge = {
     return created;
   },
 
+  mergeability(cwd, prNumber) {
+    const out = gh(["pr", "view", String(prNumber), "--json", "mergeable,mergeStateStatus,isDraft"], cwd);
+    const pr = JSON.parse(out) as { mergeable: string; mergeStateStatus: string; isDraft: boolean };
+    return { mergeable: pr.mergeable, state: pr.mergeStateStatus, draft: pr.isDraft };
+  },
+
+  mergePr(cwd, prNumber) {
+    gh(["pr", "merge", String(prNumber), "--squash"], cwd);
+    const out = gh(["pr", "view", String(prNumber), "--json", "mergeCommit"], cwd);
+    return (JSON.parse(out) as { mergeCommit?: { oid?: string } }).mergeCommit?.oid ?? "";
+  },
+
   addLabels(cwd, prNumber, labels) {
     if (labels.length === 0) return;
     for (const label of labels) ensureLabel(cwd, label);
@@ -120,6 +136,17 @@ export function memoryForge(issues: Issue[] = []): MemoryForge {
       };
       forge.prs.push(pr);
       return pr;
+    },
+    mergeability(_cwd, prNumber) {
+      const pr = forge.prs.find((p) => p.number === prNumber);
+      return { mergeable: "MERGEABLE", state: "CLEAN", draft: pr?.isDraft ?? false };
+    },
+    mergePr(_cwd, prNumber) {
+      const pr = forge.prs.find((p) => p.number === prNumber);
+      if (!pr) throw new GhError(`no such pull request: ${prNumber}`);
+      if (pr.isDraft) throw new GhError("refusing to merge a draft");
+      pr.state = "MERGED";
+      return `sha-${prNumber}`;
     },
     addLabels(_cwd, prNumber, labels) {
       const pr = forge.prs.find((p) => p.number === prNumber);

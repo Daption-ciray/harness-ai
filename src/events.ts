@@ -59,7 +59,10 @@ export type EventShapes = {
 
   pr_opened: { number: number; url: string; draft: boolean; sha: string | null; files: number; lines: number };
   ci_result: { ok: boolean; summary: string };
+  /** Every escalation rule that matched, and why. Empty means auto-merge. */
+  merge_gate: { escalate: boolean; reasons: string[] };
   merge: { sha: string; by: "human" | "harness" };
+  merge_blocked: { reason: string };
   escalate: { reason: string };
   task_failed: { reason: string };
   budget_pause: { spent_usd: number; limit_usd: number; window: "task" | "day" };
