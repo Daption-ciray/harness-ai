@@ -3,6 +3,8 @@ import { dirname } from "node:path";
 import { append } from "./events.ts";
 import { loadPolicy, type Policy } from "./policy.ts";
 import { originUrl, resolvePaths, type Paths } from "./paths.ts";
+import { advance } from "./pipeline.ts";
+import { isActive, listTasks } from "./task.ts";
 
 export type DaemonStatus = "running" | "paused" | "stopped";
 
@@ -59,12 +61,27 @@ export function requireOrigin(paths: Paths): string {
 export type Tick = { policy: Policy; paths: Paths; state: State; count: number };
 
 /**
- * One scheduler pass. Phase 0 does no dispatch yet - the lease scheduler and
- * state machine land in phases 1-2 and hook in here.
+ * One scheduler pass: advance a single task by one stage. Phase 1 is
+ * deliberately sequential - the lease scheduler and concurrent builders land in
+ * phase 2, and racing them before the chain is proven only hides bugs.
+ *
+ * Liveness is the state file's last_tick, not a `tick` event: an idle always-on
+ * daemon should not grow its own log.
  */
-function tick(ctx: Tick): void {
-  // ponytail: nothing to schedule yet. Liveness is the state file's last_tick,
-  // not a `tick` event - an idle always-on daemon should not grow the log.
+export async function tick(ctx: Tick): Promise<void> {
+  const tasks = listTasks(ctx.paths);
+  const pendingHuman = tasks.filter((t) => t.state === "escalated").length;
+  const active = tasks.filter(isActive);
+
+  // WIP limit: a full review queue stops NEW work, but work already in flight
+  // still finishes - otherwise tasks strand halfway with an open worktree.
+  const pool = pendingHuman >= ctx.policy.merge.max_pending_escalated
+    ? active.filter((t) => t.state !== "queued")
+    : active;
+
+  const next = pool[0];
+  if (!next) return;
+  await advance(next, { policy: ctx.policy, paths: ctx.paths });
 }
 
 export async function start(cwd = process.cwd()): Promise<void> {
@@ -93,6 +110,7 @@ export async function start(cwd = process.cwd()): Promise<void> {
   });
   console.log(`harness running · ${paths.slug} · tick ${policy.runtime.tick_seconds}s · pid ${process.pid}`);
 
+  let busy = false;
   const timer = setInterval(() => {
     const state = readState(paths.stateFile);
     // Re-read policy each tick so edits apply live; keep the last good one on error.
@@ -103,8 +121,11 @@ export async function start(cwd = process.cwd()): Promise<void> {
     }
     const count = state.tick_count + 1;
     writeState(paths.stateFile, { last_tick: new Date().toISOString(), tick_count: count });
-    if (state.status === "paused") return;
-    tick({ policy, paths, state, count });
+    if (state.status === "paused" || busy) return;
+    busy = true;
+    void tick({ policy, paths, state, count })
+      .catch((e) => console.error(`tick failed: ${(e as Error).message}`))
+      .finally(() => { busy = false; });
   }, policy.runtime.tick_seconds * 1000);
 
   const shutdown = (signal: string) => {

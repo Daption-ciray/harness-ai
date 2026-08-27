@@ -7,6 +7,9 @@ repo: # `scout` fills these in; correct them by hand when it guesses wrong
   test_cmd: "npm test"
   build_cmd: "npm run build"
   lint_cmd: "npm run lint"
+  # Run once in every fresh worktree. A worktree has no gitignored dependency
+  # directory, so the test command would fail without this.
+  worktree_setup_cmd: "ln -sfn $HARNESS_REPO_ROOT/node_modules node_modules"
 
 runtime:
   sandbox: none # none | container - container is post-MVP, the field is here so

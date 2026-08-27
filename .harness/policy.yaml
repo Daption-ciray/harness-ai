@@ -7,6 +7,7 @@ repo: # `scout` fills these in; correct them by hand when it guesses wrong
   test_cmd: "npm test"
   build_cmd: "npm run build"
   lint_cmd: "npm run lint"
+  worktree_setup_cmd: "ln -sfn $HARNESS_REPO_ROOT/node_modules node_modules"
 
 runtime:
   sandbox: none # none | container - container is post-MVP, the field is here so

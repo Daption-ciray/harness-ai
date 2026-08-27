@@ -79,6 +79,8 @@ export const PolicySchema = z.object({
     test_cmd: z.string(),
     build_cmd: z.string().optional(),
     lint_cmd: z.string().optional(),
+    /** Run once in each fresh worktree. `$HARNESS_REPO_ROOT` points at the main checkout. */
+    worktree_setup_cmd: z.string().optional(),
   }),
 
   runtime: z.object({
