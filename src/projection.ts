@@ -33,6 +33,8 @@ export type Task = {
   ladder_step: number;
   cost_usd: number;
   spans: number;
+  /** Question and answer pairs, in order, from every time the planner stalled. */
+  exchanges: { question: string; answer: string | null }[];
   last_error: string | null;
   created_at: string;
   updated_at: string;
@@ -44,7 +46,8 @@ function seed(id: string, ts: string, event: Extract<HarnessEvent, { type: "back
     state: "queued", task_class: "routine",
     scope: [], acceptance: [], steps: [],
     branch: null, worktree: null, setup_artifacts: [], pr: null, quarantined: false,
-    rounds: 0, revision: 0, ladder_step: 0, cost_usd: 0, spans: 0, last_error: null,
+    rounds: 0, revision: 0, ladder_step: 0, cost_usd: 0, spans: 0,
+    exchanges: [], last_error: null,
     created_at: ts, updated_at: ts,
   };
 }
@@ -69,6 +72,19 @@ export function apply(task: Task, event: HarnessEvent): Task {
         state: "planned", task_class: event.task_class, scope: event.scope,
         acceptance: event.acceptance, steps: event.steps,
         ladder_step: event.ladder_step, last_error: null,
+      });
+    case "question_asked":
+      return next({
+        state: "blocked",
+        exchanges: [...task.exchanges, { question: event.question, answer: null }],
+        last_error: event.question,
+      });
+    case "question_answered":
+      // Back to the front of the queue: the person is waiting on this.
+      return next({
+        state: "queued", last_error: null,
+        exchanges: task.exchanges.map((e) =>
+          e.question === event.question && e.answer === null ? { ...e, answer: event.answer } : e),
       });
     case "ladder_advanced":
       return next({ ladder_step: event.to, last_error: event.reason });

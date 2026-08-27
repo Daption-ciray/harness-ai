@@ -86,9 +86,16 @@ async function plan(task: Task, ctx: Ctx): Promise<void> {
   const tier = resolveTier(ctx.policy, "planner", task.task_class, step);
   if (tier.kind === "escalate") return fail(ctx, task, "planner exhausted the escalation ladder");
 
+  const answered = task.exchanges.filter((e) => e.answer !== null);
   const span = await runSpan({
     role: "planner", traceId: task.id, systemPrompt: PLANNER,
-    prompt: `Backlog item ${task.id}:\n\n${wrap(task)}`,
+    prompt: [
+      `Backlog item ${task.id}:\n\n${wrap(task)}`,
+      answered.length
+        ? `\nYou asked, and were answered. Do not ask these again:\n` +
+          answered.map((e) => `- Q: ${e.question}\n  A: ${e.answer}`).join("\n")
+        : "",
+    ].filter(Boolean).join("\n"),
     cwd: ctx.paths.repoRoot, tier: tier.tier, ladderStep: step,
     budgetUsd: budgetLeft(ctx, task), tools: ROLE_TOOLS.planner,
     roots: { write: [], read: [ctx.paths.repoRoot] },
@@ -99,7 +106,12 @@ async function plan(task: Task, ctx: Ctx): Promise<void> {
 
   const out = extractJson<PlanOutput>(span.text);
   if (!out) return climb(ctx, task, step, "planner returned no parseable JSON");
-  if (out.blocked) return fail(ctx, task, `planner needs a human answer: ${out.blocked}`);
+  if (out.blocked) {
+    // A question is not a failure. Killing the task here would make a person
+    // retype the whole request to answer one thing.
+    emit(ctx.paths.eventsFile, task.id, "question_asked", { role: "planner", question: out.blocked });
+    return;
+  }
   if (!out.acceptance?.length || !out.scope?.length) {
     return fail(ctx, task, "planner produced no acceptance criteria or no scope — the task is underspecified");
   }
@@ -165,8 +177,12 @@ async function build(task: Task, ctx: Ctx): Promise<void> {
   if (produced.length === 0) {
     return fail(ctx, current, "builder finished without changing anything");
   }
+  // Per trace, not per log: revisions belong to a task. Counting across every
+  // task made the second one number its first build "2" while the gate asked
+  // about "1", so a verifier that had already reported still looked pending.
   emit(ctx.paths.eventsFile, task.id, "build_done", {
-    files: produced, revision: currentRevision(readAll(ctx.paths.eventsFile)) + 1,
+    files: produced,
+    revision: currentRevision(readAll(ctx.paths.eventsFile).filter((e) => e.trace_id === task.id)) + 1,
   });
 }
 

@@ -136,13 +136,21 @@ export async function tick(ctx: Tick): Promise<void> {
   const pendingHuman = tasks.filter((t) => t.state === "escalated").length;
   const active = tasks.filter((t) => isActiveState(t.state));
 
-  // WIP limit: a full review queue stops NEW work, but work already in flight
-  // still finishes - otherwise tasks strand halfway with an open worktree.
-  const pool = pendingHuman >= ctx.policy.merge.max_pending_escalated
-    ? active.filter((t) => t.state !== "queued")
+  // WIP limit: a full review queue stops NEW BACKGROUND work, but work already
+  // in flight still finishes - otherwise tasks strand halfway with an open
+  // worktree - and a person's own request is never held up by the harness's
+  // backlog. Somebody asking for something is an instruction, not a suggestion;
+  // the daily budget is what caps them, not this.
+  const queueFull = pendingHuman >= ctx.policy.merge.max_pending_escalated;
+  const pool = queueFull
+    ? active.filter((t) => t.state !== "queued" || t.source === "human")
     : active;
 
-  const next = pool[0];
+  // Human intent first, then oldest first. A feature someone asked for should
+  // not wait behind three things a sensor noticed.
+  const next = [...pool].sort((a, b) =>
+    Number(b.source === "human") - Number(a.source === "human")
+    || a.created_at.localeCompare(b.created_at))[0];
   if (!next) return;
   await advance(next, { policy: ctx.policy, paths: ctx.paths, runner: ctx.runner, forge: ctx.forge });
 }

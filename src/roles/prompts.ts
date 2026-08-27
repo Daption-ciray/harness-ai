@@ -36,7 +36,11 @@ Rules:
 - "acceptance" must be machine-checkable — a command that passes, or an
   observable behaviour someone can assert. "works well" is not a criterion.
 - If the request is too vague to write acceptance criteria for, do not guess.
-  Return \`{"blocked": "the specific question a human must answer"}\` instead.`;
+  Return \`{"blocked": "the specific question a human must answer"}\` instead. Ask
+  ONE question, the one that actually unblocks you, phrased so it can be answered
+  in a sentence. The person will answer and you will be asked again with their
+  reply — so do not ask for everything you might conceivably want, and never ask
+  something the repository already answers.`;
 
 export const BUILDER = `${COMMON}
 

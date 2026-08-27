@@ -55,6 +55,13 @@ export function status(cwd = process.cwd(), limit = 8): string {
     ? Object.entries(byState).map(([s, n]) => `${n} ${s}`).join(" · ")
     : "none"));
 
+  const blocked = tasks.filter((t) => t.state === "blocked");
+  for (const task of blocked) {
+    const q = task.exchanges.find((e) => e.answer === null)?.question ?? "";
+    lines.push(row("waiting", `${task.id} needs an answer — ${q}`));
+    lines.push(row("", `  harness answer ${task.id} "..."`));
+  }
+
   lines.push(row("events", `${events.length} total`));
   for (const event of events.slice(-limit)) {
     lines.push(`  ${ago(event.ts).padEnd(9)} ${event.trace_id.padEnd(8)} ${event.type.padEnd(15)} ${describe(event)}`);

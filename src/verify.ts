@@ -6,7 +6,11 @@ import type { Policy, Role } from "./policy.ts";
 /** Roles that report a verdict on a revision rather than producing work. */
 export const VERIFIER_ROLES: readonly Role[] = ["adversary", "review", "security"];
 
-/** Every build produces a new revision; verdicts are always about one of them. */
+/**
+ * Every build produces a new revision; verdicts are always about one of them.
+ * Callers must pass ONE trace's events — a revision belongs to a task, and
+ * counting across the whole log misnumbers every task after the first.
+ */
 export function currentRevision(events: HarnessEvent[]): number {
   return events.filter((e) => e.type === "build_done").length;
 }

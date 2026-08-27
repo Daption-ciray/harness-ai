@@ -153,3 +153,15 @@ test("concerns from every verifier on the current revision reach the pull reques
   assert.ok(concerns.some((c) => c.startsWith("review: b.ts")));
   assert.ok(!concerns.some((c) => c.includes("stale revision")));
 });
+
+test("revisions belong to a task, not to the log", () => {
+  // Counted across every trace, the second task numbered its first build "2"
+  // while the gate asked about "1" — so a verifier that had already reported
+  // still looked pending, and the same one ran forever.
+  const log: HarnessEvent[] = [
+    { ts: ts(), trace_id: "bk-1", type: "build_done", files: ["a.ts"], revision: 1 },
+    { ts: ts(), trace_id: "bk-2", type: "build_done", files: ["b.ts"], revision: 1 },
+  ];
+  assert.equal(currentRevision(log.filter((e) => e.trace_id === "bk-2")), 1);
+  assert.equal(currentRevision(log), 2, "unfiltered, it counts the whole log — which is why callers must filter");
+});

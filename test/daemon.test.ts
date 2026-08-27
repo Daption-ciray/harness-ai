@@ -56,13 +56,42 @@ test("a full review queue stops new work but lets work in flight finish", async 
   // Otherwise a task strands halfway with an open worktree and a pushed branch.
   const h = harness(CHAIN(3), { merge: { auto: false, max_pending_escalated: 1, escalate_when: [] } });
   for (const id of ["bk-1", "bk-2"]) {
-    addBacklog(h.paths.eventsFile, id, { text: `work ${id}`, origin: "trusted", source: "human" });
+    addBacklog(h.paths.eventsFile, id, {
+      text: `work ${id}`, origin: "trusted", source: "broken_tests", fingerprint: id,
+    });
   }
 
   await h.pump(12);
   const tasks = listTasks(readAll(h.paths.eventsFile));
   assert.equal(tasks[0].state, "escalated", "the first task ran to a pull request");
   assert.equal(tasks[1].state, "queued", "the second never started: the queue was full");
+});
+
+test("a person's own request is never held up by the harness's backlog", async () => {
+  // Somebody asking for something is an instruction, not a suggestion. The daily
+  // budget is what caps them, not a queue the harness filled itself.
+  const h = harness(CHAIN(3), { merge: { auto: false, max_pending_escalated: 1, escalate_when: [] } });
+  addBacklog(h.paths.eventsFile, "bk-1", {
+    text: "sensor work", origin: "trusted", source: "broken_tests", fingerprint: "fp",
+  });
+  await h.pump(12);
+  assert.equal(listTasks(readAll(h.paths.eventsFile))[0].state, "escalated", "queue is now full");
+
+  addBacklog(h.paths.eventsFile, "bk-2", { text: "add a feature", origin: "trusted", source: "human" });
+  await h.pump(12);
+  assert.equal(projectOne(readAll(h.paths.eventsFile), "bk-2")?.state, "escalated");
+});
+
+test("what a person asked for runs before what a sensor noticed", async () => {
+  const h = harness(CHAIN(2));
+  addBacklog(h.paths.eventsFile, "bk-1", {
+    text: "sensor found this first", origin: "trusted", source: "broken_tests", fingerprint: "fp",
+  });
+  addBacklog(h.paths.eventsFile, "bk-2", { text: "but I asked for this", origin: "trusted", source: "human" });
+
+  await h.pump(1);
+  assert.equal(projectOne(readAll(h.paths.eventsFile), "bk-2")?.state, "planned");
+  assert.equal(projectOne(readAll(h.paths.eventsFile), "bk-1")?.state, "queued");
 });
 
 test("the daily budget pauses the daemon rather than merely complaining", async () => {
@@ -90,7 +119,7 @@ test("a paused daemon spends nothing further", async () => {
 test("a finished task's worktree is reclaimed; a live one's is left alone", async () => {
   const h = harness(CHAIN(1));
   addBacklog(h.paths.eventsFile, "bk-1", { text: "work", origin: "trusted", source: "human" });
-  await h.pump(8);
+  await h.pump(12);
 
   const escalated = projectOne(readAll(h.paths.eventsFile), "bk-1");
   assert.equal(escalated?.state, "escalated");

@@ -441,6 +441,30 @@ permissions:
 
 ---
 
+## 11a. İnsan niyeti
+
+İş harness'a iki yoldan gelir: **sen istersin**, ya da bir sensör bulur. İkisi eşit
+değil.
+
+```
+harness ask "şunu ekle"        argv, --file <path>, veya stdin
+harness waiting                sana bakan her şey, neden baktığıyla
+harness answer bk-3 "Auth0"    planner'ın takıldığı soruyu cevapla
+```
+
+**Senin isteğin önce koşar.** Sensörün bulduğu üç şeyin arkasında beklemez.
+
+**WIP limiti seni bloklamaz.** O limit harness'ın *kendi başına* başlattığı işi
+sınırlar; senin verdiğin talimatı değil. Seni sınırlayan şey günlük bütçe.
+
+**Soru başarısızlık değil.** Planner kabul kriteri yazamıyorsa tahmin etmiyor,
+`question_asked` yazıp `blocked` durumuna geçiyor. Cevabın log'a giriyor, görev
+kuyruğa dönüyor, ve **cevap bir sonraki denemeye taşınıyor** — isteği baştan
+yazmıyorsun. Planner'a "bunları tekrar sorma" diye veriliyor.
+
+Tek soru sorma kuralı prompt'ta: cevaplanınca yine sorulacağı için, ihtimalen
+isteyebileceği her şeyi tek seferde sormasına gerek yok.
+
 ## 11b. Sensörler ve always-on
 
 ### Sensörler ajan değil, kod

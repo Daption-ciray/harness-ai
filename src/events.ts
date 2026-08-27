@@ -29,6 +29,9 @@ export type EventShapes = {
     acceptance: string[]; steps: string[]; ladder_step: number;
   };
   ladder_advanced: { from: number; to: number; reason: string };
+  /** The planner could not write acceptance criteria without an answer. */
+  question_asked: { role: Role; question: string };
+  question_answered: { question: string; answer: string };
   build_done: { files: string[]; revision: number };
   verified: { revision: number; verifiers: Role[] };
   decision_written: { title: string; anchors: string[]; constraint: string | null };

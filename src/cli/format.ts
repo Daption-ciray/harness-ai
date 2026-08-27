@@ -28,6 +28,8 @@ export function describe(event: HarnessEvent): string {
     case "task_planned":
       return `${event.task_class} · rung ${event.ladder_step} · ${event.scope.length} scope, ${event.acceptance.length} criteria`;
     case "ladder_advanced": return `rung ${event.from} → ${event.to} · ${event.reason}`;
+    case "question_asked": return `${event.role} needs an answer · ${event.question}`;
+    case "question_answered": return event.answer.split("\n")[0].slice(0, 70);
     case "build_done": return `revision ${event.revision} · ${event.files.length} files changed`;
     case "verified": return `revision ${event.revision} · ${event.verifiers.join(", ")} all passed`;
     case "decision_written":

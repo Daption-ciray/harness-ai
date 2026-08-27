@@ -167,11 +167,52 @@ test("a file outside the declared scope is reported and never staged", async () 
   assert.deepEqual(h.forge.prs[0].labels, ["harness", "blocked:devops"]);
 });
 
-test("a planner that cannot write acceptance criteria stops the task instead of guessing", async () => {
+test("a planner that cannot write acceptance criteria asks rather than guessing", async () => {
   const h = harness([{ role: "planner", text: fencedJson({ blocked: "which auth provider?" }) }]);
   const task = await h.step();
-  assert.equal(task.state, "failed");
-  assert.match(task.last_error as string, /which auth provider\?/);
+  assert.equal(task.state, "blocked", "a question is not a failure");
+  assert.deepEqual(task.exchanges, [{ question: "which auth provider?", answer: null }]);
+});
+
+test("answering puts the task back in the queue, with the answer carried forward", async () => {
+  // Without this a question is a dead end and the person has to retype the whole
+  // request to say one thing.
+  let secondPrompt = "";
+  const h = harness([
+    { role: "planner", text: fencedJson({ blocked: "which auth provider?" }) },
+    { role: "planner", text: fencedJson(PLAN) },
+    { role: "builder", act: writeGreet },
+    { role: "adversary", text: fencedJson(PASS) },
+    { role: "review", text: fencedJson(PASS) },
+    { role: "scribe", text: fencedJson(SCRIBE_ENTRY) },
+    { role: "devops", text: fencedJson(DEVOPS_OK) },
+  ]);
+  const inner = h.ctx.runner;
+  let planners = 0;
+  h.ctx.runner = async (req) => {
+    if (req.role === "planner" && ++planners === 2) secondPrompt = req.prompt;
+    return inner(req);
+  };
+
+  assert.equal((await h.step()).state, "blocked");
+  const { answer } = await import("../src/cli/backlog.ts");
+  answer(h.dir, "bk-1", "Auth0, and keep the existing session cookie");
+
+  const resumed = h.load();
+  assert.equal(resumed.state, "queued");
+  assert.equal(resumed.exchanges[0].answer, "Auth0, and keep the existing session cookie");
+
+  const done = await h.runToEnd();
+  assert.equal(done.state, "escalated");
+  assert.match(secondPrompt, /You asked, and were answered/);
+  assert.match(secondPrompt, /Auth0, and keep the existing session cookie/);
+});
+
+test("answering something that is not waiting says so instead of pretending", async () => {
+  const h = harness([{ role: "planner", text: fencedJson(PLAN) }]);
+  const { answer } = await import("../src/cli/backlog.ts");
+  assert.match(answer(h.dir, "bk-1", "hello"), /not waiting on an answer/);
+  assert.match(answer(h.dir, "bk-99", "hello"), /no such task/);
 });
 
 test("a plan with no scope is underspecified, not something to build anyway", async () => {

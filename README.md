@@ -72,12 +72,20 @@ advancing the same task into two worktrees and two pull requests.
 
 ```sh
 npm install
-node bin/harness.ts init                      # writes .harness/policy.yaml
-node bin/harness.ts backlog add "do a thing"  # queue work
-node bin/harness.ts run                       # advance one stage, in the foreground
-node bin/harness.ts start                     # or run the daemon
-node bin/harness.ts status
+node bin/harness.ts init                       # writes .harness/policy.yaml
+node bin/harness.ts ask "add a --json flag"    # ask for a change
+node bin/harness.ts ask --file spec.md         # ...or hand it a spec
+node bin/harness.ts start                      # run the daemon
+node bin/harness.ts waiting                    # what needs you, and why
+node bin/harness.ts answer bk-3 "use Auth0"    # unblock a question
 ```
+
+Work reaches the harness two ways: **you ask for it**, or a sensor finds it.
+What you asked for runs first and is never held up by the queue the harness
+filled itself — that queue caps what the harness starts on its own, not what you
+instruct it to do. When the planner cannot write acceptance criteria without
+knowing something, it asks rather than guessing, and your answer is carried into
+the next attempt so you never retype the request.
 
 `HARNESS_HOME` relocates the sidecar, which is how the tests stay off your home
 directory.

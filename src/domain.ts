@@ -6,6 +6,7 @@ export type TaskClass = "trivial" | "routine" | "risky";
 
 export type TaskState =
   | "queued"       // needs the planner
+  | "blocked"      // the planner asked a question only a human can answer
   | "planned"      // needs a builder
   | "verifying"    // built; the verifiers have not all reported yet
   | "scribing"     // verified; the decision entry is not written yet
@@ -16,6 +17,9 @@ export type TaskState =
 
 export const ACTIVE_STATES: readonly TaskState[] =
   ["queued", "planned", "verifying", "scribing", "integrating"];
+
+/** Waiting on a person rather than on the harness. */
+export const HUMAN_STATES: readonly TaskState[] = ["blocked", "escalated"];
 
 /**
  * A verifier reports findings, not prose. Only a `blocker` is a veto; a

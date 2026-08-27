@@ -1,6 +1,7 @@
 import { sdkRunner } from "../agent-runner.ts";
 import { ghForge } from "../github.ts";
-import { isActiveState, type Origin } from "../domain.ts";
+import { readFileSync } from "node:fs";
+import { HUMAN_STATES, isActiveState, type Origin } from "../domain.ts";
 import { emit, readAll } from "../events.ts";
 import { LockBusy, withLock } from "../lock.ts";
 import { resolvePaths } from "../paths.ts";
@@ -9,13 +10,55 @@ import { addBacklog, advance, type Ctx } from "../pipeline.ts";
 import { activeTasks, listTasks, nextTaskId, projectOne } from "../projection.ts";
 import { money } from "./format.ts";
 
-export function backlogAdd(cwd: string, text: string, origin: Origin = "trusted"): string {
-  const trimmed = text.trim();
-  if (!trimmed) throw new Error("backlog add needs some text");
+/**
+ * What someone asks for, in their own words. A feature request rarely fits on one
+ * argv line, so the text can also come from a file or from stdin — `harness ask <
+ * spec.md` is the shape this is usually wanted in.
+ */
+export function ask(
+  cwd: string,
+  input: { text?: string; file?: string; stdin?: string },
+  origin: Origin = "trusted",
+): string {
+  const text = (input.file ? readFileSync(input.file, "utf8") : (input.text || input.stdin || "")).trim();
+  if (!text) {
+    throw new Error('nothing to do: harness ask "<what you want>", --file <path>, or pipe it in');
+  }
   const paths = resolvePaths(cwd);
   const id = nextTaskId(readAll(paths.eventsFile));
-  addBacklog(paths.eventsFile, id, { text: trimmed, origin, source: "human" });
-  return `${id}  queued  (${origin})  ${trimmed}`;
+  addBacklog(paths.eventsFile, id, { text, origin, source: "human" });
+  return `${id}  queued  ${text.split("\n")[0].slice(0, 60)}\n` +
+    `        runs ahead of anything a sensor found. \`harness tasks\` to follow it.`;
+}
+
+/**
+ * Answers the question a planner stopped on. Without this, a question is a dead
+ * end and the person has to retype the whole request to say one thing.
+ */
+export function answer(cwd: string, id: string, text: string): string {
+  const paths = resolvePaths(cwd);
+  const task = projectOne(readAll(paths.eventsFile), id);
+  if (!task) return `no such task: ${id}`;
+  const pending = task.exchanges.find((e) => e.answer === null);
+  if (!pending) return `${id} is not waiting on an answer (it is ${task.state})`;
+  if (!text.trim()) throw new Error("an answer needs some text");
+
+  emit(paths.eventsFile, id, "question_answered", { question: pending.question, answer: text.trim() });
+  return `${id}  blocked → queued\n        Q: ${pending.question}\n        A: ${text.trim()}`;
+}
+
+/** Every task a person needs to look at, and why. */
+export function waiting(cwd: string): string {
+  const tasks = listTasks(readAll(resolvePaths(cwd).eventsFile))
+    .filter((t) => HUMAN_STATES.includes(t.state));
+  if (tasks.length === 0) return "nothing is waiting on you";
+  return tasks.map((t) => {
+    if (t.state === "blocked") {
+      const q = t.exchanges.find((e) => e.answer === null)?.question ?? "(no question recorded)";
+      return `${t.id}  needs an answer\n      ${q}\n      → harness answer ${t.id} "..."`;
+    }
+    return `${t.id}  needs review${t.pr ? `  ${t.pr.url}` : ""}\n      ${t.text.split("\n")[0].slice(0, 70)}`;
+  }).join("\n\n");
 }
 
 /**
