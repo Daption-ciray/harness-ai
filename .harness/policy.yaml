@@ -7,11 +7,15 @@ repo: # `scout` fills these in; correct them by hand when it guesses wrong
   test_cmd: "npm test"
   build_cmd: "npm run build"
   lint_cmd: "npm run lint"
+  # Run once in every fresh worktree. A worktree has no gitignored dependency
+  # directory, so the test command would fail without this.
   worktree_setup_cmd: "ln -sfn $HARNESS_REPO_ROOT/node_modules node_modules"
 
 runtime:
-  sandbox: none # none | container - container is post-MVP, the field is here so
-                # switching later is a config change, not an architecture change
+  # os  = the Claude Code sandbox (macOS Seatbelt, Linux/WSL2). Kernel-level, so
+  #       it holds over Bash and every child process, which no regex can.
+  # none = explicit opt-out, for a platform where the sandbox cannot start.
+  sandbox: os
   max_concurrent_builders: 4
   tick_seconds: 60
   lease_ttl_seconds: 900
@@ -107,9 +111,17 @@ permissions:
     - "Bash(rm -rf *)"
   git_allowed_for: [devops] # single writer for git/CI, the way scribe is for memory
   never_edit:
-    - ".harness/policy.yaml"
-    - ".github/workflows/**"
+    - ".harness/**"          # the harness may propose policy changes, never apply them
+    - ".github/workflows/**" # CI runs arbitrary code; editing it is a privilege escalation
   write_scope: repo_only
+  never_read:                # credentials, including the ones that pay for the run
+    - "~/.ssh/**"
+    - "~/.aws/**"
+    - "~/.config/anthropic/**"
+    - "~/.claude/**"
+    - "~/.npmrc"
+    - "**/.env"
+    - "**/.env.*"
   network_allowlist:
     - registry.npmjs.org
     - github.com

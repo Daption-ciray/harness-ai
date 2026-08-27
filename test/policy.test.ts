@@ -35,7 +35,9 @@ test("only devops may touch git, and policy.yaml is off-limits to every role", (
   const perms = parsePolicy(TEMPLATE).permissions;
   assert.deepEqual(perms.git_allowed_for, ["devops"]);
   assert.ok(perms.deny_all_roles.includes("Bash(git *)"));
-  assert.ok(perms.never_edit.includes(".harness/policy.yaml"));
+  assert.ok(perms.never_edit.includes(".harness/**"), "the whole harness directory, not just the policy file");
+  assert.ok(perms.never_read.some((p) => p.includes(".ssh")), "credentials are unreadable");
+  assert.equal(parsePolicy(TEMPLATE).runtime.sandbox, "os", "the OS sandbox is on by default");
 });
 
 test("invalid YAML reports as a policy error, not a crash", () => {

@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { AgentOutcome, AgentRunner, Denial } from "./agent-runner.ts";
 import { emit } from "./events.ts";
-import { screenCommand } from "./permissions.ts";
+import { denyRules, sandboxSettings, screenTool, type Guard } from "./permissions.ts";
 import type { Effort, Policy, Role } from "./policy.ts";
 import type { ToolPolicy } from "./roles/tools.ts";
 
@@ -18,6 +18,10 @@ export type SpanInput = {
   budgetUsd: number;
   tools: ToolPolicy;
   resume?: string;
+  /** What the agent may write, and what it may read. Separate: a builder reads
+   *  the main checkout through its symlinked dependencies but must never write
+   *  there. */
+  roots: { write: string[]; read: string[] };
 };
 
 export type SpanResult = AgentOutcome & { spanId: string; denials: Denial[] };
@@ -43,6 +47,10 @@ export async function runSpan(input: SpanInput, deps: SpanDeps): Promise<SpanRes
 
   emit(deps.eventsFile, input.traceId, "span_start", common);
 
+  const guard: Guard = {
+    role: input.role, policy: deps.policy, cwd: input.cwd, roots: input.roots,
+  };
+
   const outcome = await deps.runner({
     role: input.role,
     systemPrompt: input.systemPrompt,
@@ -54,14 +62,16 @@ export async function runSpan(input: SpanInput, deps: SpanDeps): Promise<SpanRes
     budgetUsd: input.budgetUsd,
     tools: input.tools,
     resume: input.resume,
-    screenCommand: (command) => screenCommand(deps.policy, input.role, command),
+    sandbox: sandboxSettings(guard),
+    denyRules: denyRules(guard),
+    screenTool: (toolName, toolInput) => screenTool(guard, toolName, toolInput),
     onDenial: (denial) => {
       denials.push(denial);
       // Recorded, so a leak in the single-writer rule shows up in the trace
       // instead of passing silently.
       emit(deps.eventsFile, input.traceId, "tool_denied", {
         span_id: spanId, role: input.role,
-        tool: denial.tool, reason: denial.reason, command: denial.command,
+        tool: denial.tool, reason: denial.reason, command: denial.detail,
       });
     },
   });

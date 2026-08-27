@@ -9,7 +9,7 @@ import { emit, readAll, type HarnessEvent } from "./events.ts";
 import type { Paths } from "./paths.ts";
 import type { Policy } from "./policy.ts";
 import { projectOne, spendSince, type Task } from "./projection.ts";
-import { ADVERSARY, BUILDER, DEVOPS, PLANNER, REVIEW } from "./roles/prompts.ts";
+import { ADVERSARY, BUILDER, DEVOPS, PLANNER, REVIEW, SECURITY } from "./roles/prompts.ts";
 import { ROLE_TOOLS } from "./roles/tools.ts";
 import { extractJson, runSpan, type SpanResult } from "./spawn.ts";
 import { classify, ladderStartFor, resolveTier } from "./tier.ts";
@@ -72,6 +72,7 @@ async function plan(task: Task, ctx: Ctx): Promise<void> {
     prompt: `Backlog item ${task.id}:\n\n${wrap(task)}`,
     cwd: ctx.paths.repoRoot, tier: tier.tier, ladderStep: step,
     budgetUsd: budgetLeft(ctx, task), tools: ROLE_TOOLS.planner,
+    roots: { write: [], read: [ctx.paths.repoRoot] },
   }, { policy: ctx.policy, eventsFile: ctx.paths.eventsFile, runner: ctx.runner });
 
   if (!span.ok) return climb(ctx, task, step, spanFailure(span));
@@ -134,6 +135,7 @@ async function build(task: Task, ctx: Ctx): Promise<void> {
     role: "builder", traceId: task.id, systemPrompt: BUILDER, prompt,
     cwd: dir, tier: tier.tier, ladderStep: step,
     budgetUsd: budgetLeft(ctx, current), tools: ROLE_TOOLS.builder,
+    roots: { write: [dir], read: [dir, ctx.paths.repoRoot] },
   }, { policy: ctx.policy, eventsFile: ctx.paths.eventsFile, runner: ctx.runner });
 
   if (!span.ok) return climb(ctx, current, step, spanFailure(span));
@@ -148,11 +150,15 @@ async function build(task: Task, ctx: Ctx): Promise<void> {
 }
 
 /** What each verifier is handed, and where it runs. */
-const VERIFIERS: Partial<Record<Role, { systemPrompt: string; inWorktree: boolean }>> = {
+const VERIFIERS: Partial<Record<Role, { systemPrompt: string; inWorktree: boolean; canWrite: boolean }>> = {
   // The adversary runs in the worktree because writing a failing test is its
   // strongest possible finding, and it cannot write one without the tree.
-  adversary: { systemPrompt: ADVERSARY, inWorktree: true },
-  review: { systemPrompt: REVIEW, inWorktree: false },
+  adversary: { systemPrompt: ADVERSARY, inWorktree: true, canWrite: true },
+  // review is handed the diff and nothing else.
+  review: { systemPrompt: REVIEW, inWorktree: false, canWrite: false },
+  // security reads the whole tree - a secret or a dependency change is rarely
+  // visible in the diff alone - but never writes to it.
+  security: { systemPrompt: SECURITY, inWorktree: true, canWrite: false },
 };
 
 const AVAILABLE_VERIFIERS = Object.keys(VERIFIERS) as Role[];
@@ -228,6 +234,12 @@ async function verify(task: Task, ctx: Ctx): Promise<void> {
     cwd: spec.inWorktree ? dir : ctx.paths.repoRoot,
     tier: tier.tier, ladderStep: task.ladder_step,
     budgetUsd: budgetLeft(ctx, task), tools: ROLE_TOOLS[role],
+    // The adversary writes failing tests, so it needs the worktree. review does
+    // not write at all and only ever sees the diff it is handed.
+    roots: {
+      write: spec.canWrite ? [dir] : [],
+      read: spec.inWorktree ? [dir, ctx.paths.repoRoot] : [ctx.paths.repoRoot],
+    },
   }, { policy: ctx.policy, eventsFile: ctx.paths.eventsFile, runner: ctx.runner });
 
   if (!span.ok) return climb(ctx, task, task.ladder_step, spanFailure(span));
@@ -297,6 +309,7 @@ async function integrate(task: Task, ctx: Ctx): Promise<void> {
     role: "devops", traceId: task.id, systemPrompt: DEVOPS, prompt,
     cwd: dir, tier: tier.tier, ladderStep: task.ladder_step,
     budgetUsd: budgetLeft(ctx, task), tools: ROLE_TOOLS.devops,
+    roots: { write: [], read: [dir] },
   }, { policy: ctx.policy, eventsFile: ctx.paths.eventsFile, runner: ctx.runner });
 
   const out = span.ok ? extractJson<DevopsOutput>(span.text) : null;
@@ -315,11 +328,15 @@ async function integrate(task: Task, ctx: Ctx): Promise<void> {
     ...(out.concerns ?? []),
     ...violations.map((v) => `outside declared scope: ${v}`),
   ];
-  const ready = out.ready !== false && violations.length === 0;
-  const body = prBody(task, concerns, stat);
+  // A hard veto never merges and never silently disappears: the pull request
+  // still opens, as a draft, so the finding reaches a human with the code.
+  const ready = !task.quarantined && out.ready !== false && violations.length === 0;
+  const body = prBody(task, concerns, stat, hardVetoFindings(readAll(ctx.paths.eventsFile)));
 
   const pr = ctx.forge.createPr(dir, { branch, base, title: out.pr_title ?? out.commit_message, body, draft: !ready });
-  ctx.forge.addLabels(dir, pr.number, ready ? ["harness", "needs:human"] : ["harness", "blocked:devops"]);
+  ctx.forge.addLabels(dir, pr.number, ready
+    ? ["harness", "needs:human"]
+    : ["harness", task.quarantined ? "blocked:security" : "blocked:devops"]);
 
   emit(ctx.paths.eventsFile, task.id, "pr_opened", {
     number: pr.number, url: pr.url, draft: !ready, sha,
@@ -331,8 +348,25 @@ async function integrate(task: Task, ctx: Ctx): Promise<void> {
   });
 }
 
-export function prBody(task: Task, concerns: string[], stat: { files: number; lines: number }): string {
+/** Blockers from a hard veto, which lead the pull request rather than trailing it. */
+export function hardVetoFindings(events: ReturnType<typeof readAll>): Finding[] {
+  return events
+    .filter((e) => e.type === "veto" && e.kind === "hard")
+    .flatMap((e) => (e as Extract<HarnessEvent, { type: "veto" }>).findings)
+    .filter((f) => f.severity === "blocker");
+}
+
+export function prBody(
+  task: Task, concerns: string[], stat: { files: number; lines: number }, blockers: Finding[] = [],
+): string {
   return [
+    ...(task.quarantined
+      ? [
+        `> **Quarantined by \`security\`.** This change does not merge until a human`,
+        `> releases it. The findings below are hard vetoes, not suggestions.`, ``,
+        ...blockers.map((f) => `- **${f.file}${f.line ? `:${f.line}` : ""}** — ${f.summary}`), ``,
+      ]
+      : []),
     `## What`, task.text, ``,
     `## Why`, `Backlog item \`${task.id}\` — origin ${task.origin}, source ${task.source}, class ${task.task_class}.`, ``,
     `## Acceptance criteria`, ...task.acceptance.map((a) => `- ${a}`), ``,

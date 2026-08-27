@@ -25,6 +25,14 @@ const BLOCK = {
   findings: [{ file: "src/greet.js", severity: "blocker", summary: "greet does not uppercase the name" }],
 };
 
+const SECURITY_BLOCK = {
+  verdict: "block", note: "credential in the diff",
+  findings: [{
+    file: "src/auth/token.js", line: 3, severity: "blocker",
+    summary: "hard-coded API key committed to the repository",
+  }],
+};
+
 const DEVOPS_OK = {
   commit_message: "feat(greet): uppercase the name",
   pr_title: "Uppercase the greeting",
@@ -368,16 +376,104 @@ test("every required verifier reports before the change reaches devops", async (
     "devops runs only after verification passed");
 });
 
-test("a role that policy routes to but the harness cannot run does not wedge the task", async () => {
-  // The shipped policy routes auth paths to `security`, which arrives in phase 3.
+function writeAuth(cwd: string): void {
+  mkdirSync(join(cwd, "src/auth"), { recursive: true });
+  writeFileSync(join(cwd, "src/auth/token.js"), "export const ok = 1;\n");
+}
+
+const AUTH_PLAN = { ...PLAN, scope: ["src/auth/**"] };
+
+test("touching auth paths is what pulls security into the task at all", async () => {
   const h = harness([
-    { role: "planner", text: fencedJson({ ...PLAN, scope: ["src/auth/**"] }) },
-    { role: "builder", act: (cwd) => { mkdirSync(join(cwd, "src/auth"), { recursive: true }); writeFileSync(join(cwd, "src/auth/token.js"), "export const ok = 1;\n"); } },
+    { role: "planner", text: fencedJson(AUTH_PLAN) },
+    { role: "builder", act: writeAuth },
+    { role: "security", text: fencedJson(PASS) },
     { role: "adversary", text: fencedJson(PASS) },
     { role: "review", text: fencedJson(PASS) },
     { role: "devops", text: fencedJson(DEVOPS_OK) },
   ]);
   const task = await h.runToEnd();
+
   assert.equal(task.task_class, "risky");
   assert.equal(task.state, "escalated");
+  assert.equal(task.quarantined, false);
+  assert.equal(h.runner.remaining(), 0, "security ran, and it ran first");
+});
+
+test("the lease puts the routed specialist at the front of the queue", async () => {
+  const h = harness([
+    { role: "planner", text: fencedJson(AUTH_PLAN) },
+    { role: "builder", act: writeAuth },
+    { role: "security", text: fencedJson(PASS) },
+    { role: "adversary", text: fencedJson(PASS) },
+    { role: "review", text: fencedJson(PASS) },
+    { role: "devops", text: fencedJson(DEVOPS_OK) },
+  ]);
+  await h.runToEnd();
+  const roles = readAll(h.paths.eventsFile)
+    .filter((e) => e.type === "span_start")
+    .map((e) => (e as { role: string }).role);
+  assert.deepEqual(roles, ["planner", "builder", "security", "adversary", "review", "devops"]);
+});
+
+test("a hard veto quarantines the change and still puts it in front of a human", async () => {
+  // A finding nobody sees protects nobody: the pull request opens as a draft,
+  // labelled, with the blocker leading the body.
+  const h = harness([
+    { role: "planner", text: fencedJson(AUTH_PLAN) },
+    { role: "builder", act: writeAuth },
+    { role: "security", text: fencedJson(SECURITY_BLOCK) },
+    { role: "devops", text: fencedJson(DEVOPS_OK) },
+  ]);
+  const task = await h.runToEnd();
+
+  assert.equal(task.quarantined, true);
+  assert.equal(task.state, "escalated");
+  assert.equal(task.revision, 1, "a hard veto does not send the work back to the builder");
+  assert.equal(h.runner.remaining(), 0, "adversary and review never ran: security said stop");
+
+  const pr = h.forge.prs[0];
+  assert.equal(pr.isDraft, true);
+  assert.deepEqual(pr.labels, ["harness", "blocked:security"]);
+  assert.match(pr.body, /Quarantined by `security`/);
+  assert.match(pr.body, /hard-coded API key committed to the repository/);
+  assert.ok(pr.body.indexOf("Quarantined") < pr.body.indexOf("## What"),
+    "the blocker leads the body rather than trailing it");
+});
+
+test("a soft veto from security is impossible - policy gives it the only hard one", async () => {
+  const h = harness([
+    { role: "planner", text: fencedJson(AUTH_PLAN) },
+    { role: "builder", act: writeAuth },
+    { role: "security", text: fencedJson(SECURITY_BLOCK) },
+    { role: "devops", text: fencedJson(DEVOPS_OK) },
+  ]);
+  await h.runToEnd();
+  const veto = readAll(h.paths.eventsFile).find((e) => e.type === "veto");
+  assert.equal((veto as { kind: string }).kind, "hard");
+});
+
+test("a denied write is recorded against the role that attempted it", async () => {
+  const h = harness([
+    { role: "planner", text: fencedJson(PLAN) },
+    {
+      role: "builder", act: writeGreet,
+      attempts: [
+        { tool: "Write", input: { file_path: "/etc/passwd", content: "x" } },
+        { tool: "Edit", input: { file_path: ".harness/policy.yaml", content: "x" } },
+        { tool: "Read", input: { file_path: "~/.ssh/id_rsa" } },
+        { tool: "Write", input: { file_path: "src/legit.js", content: "x" } },
+      ],
+    },
+    { role: "adversary", text: fencedJson(PASS) },
+    { role: "review", text: fencedJson(PASS) },
+    { role: "devops", text: fencedJson(DEVOPS_OK) },
+  ]);
+  await h.runToEnd();
+
+  const denied = readAll(h.paths.eventsFile).filter((e) => e.type === "tool_denied");
+  assert.equal(denied.length, 3, "the legitimate write went through");
+  assert.deepEqual(denied.map((e) => (e as { tool: string }).tool), ["Write", "Edit", "Read"]);
+  assert.ok(denied.every((e) => (e as { role: string }).role === "builder"));
+  assert.match((denied[1] as { reason: string }).reason, /never_edit/);
 });

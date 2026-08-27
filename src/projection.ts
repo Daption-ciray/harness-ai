@@ -23,6 +23,8 @@ export type Task = {
   /** Left behind by worktree_setup_cmd: never the builder's doing. */
   setup_artifacts: string[];
   pr: { number: number; url: string; draft: boolean } | null;
+  /** Set by a hard veto. Only a human clears it. */
+  quarantined: boolean;
   /** Failed builder attempts. */
   rounds: number;
   /** Bumped by every build; verdicts are always about one revision. */
@@ -40,7 +42,7 @@ function seed(id: string, ts: string, text: string, origin: Origin, source: stri
     id, text, origin, source,
     state: "queued", task_class: "routine",
     scope: [], acceptance: [], steps: [],
-    branch: null, worktree: null, setup_artifacts: [], pr: null,
+    branch: null, worktree: null, setup_artifacts: [], pr: null, quarantined: false,
     rounds: 0, revision: 0, ladder_step: 0, cost_usd: 0, spans: 0, last_error: null,
     created_at: ts, updated_at: ts,
   };
@@ -87,7 +89,13 @@ export function apply(task: Task, event: HarnessEvent): Task {
       // it, and only a human or `security` releases that.
       return event.kind === "soft"
         ? next({ state: "planned", last_error: `${event.role}: ${event.reason}` })
-        : next({ state: "failed", last_error: `${event.role} (hard veto): ${event.reason}` });
+        // A hard veto skips the remaining verifiers - security said stop, so
+        // there is nothing left to weigh - and goes straight to a draft pull
+        // request, because a finding a human never sees protects nobody.
+        : next({
+          state: "integrating", quarantined: true,
+          last_error: `${event.role} (hard veto): ${event.reason}`,
+        });
     case "stalled":
       return next({ state: "failed", last_error: `${event.kind}: ${event.detail}` });
     case "span_end":

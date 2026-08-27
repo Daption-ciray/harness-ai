@@ -86,7 +86,13 @@ export const PolicySchema = z.object({
   }),
 
   runtime: z.object({
-    sandbox: z.enum(["none", "container"]).default("none"),
+    /**
+     * `os` is the Claude Code sandbox: macOS Seatbelt, Linux/WSL2 via its own
+     * packages. Real kernel-level enforcement over Bash and every child process,
+     * which is the only kind a regex over shell commands cannot provide.
+     * `container` is a stronger future option; `none` is an explicit opt-out.
+     */
+    sandbox: z.enum(["none", "os", "container"]).default("os"),
     max_concurrent_builders: z.number().int().positive().default(4),
     tick_seconds: z.number().int().positive().default(60),
     lease_ttl_seconds: z.number().int().positive().default(900),
@@ -131,6 +137,8 @@ export const PolicySchema = z.object({
     never_edit: z.array(z.string()).default([]),
     write_scope: z.enum(["repo_only"]).default("repo_only"),
     network_allowlist: z.array(z.string()).default([]),
+    /** Paths no role may read. Home-relative entries start with `~/`. */
+    never_read: z.array(z.string()).default([]),
   }),
 });
 

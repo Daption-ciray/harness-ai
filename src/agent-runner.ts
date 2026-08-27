@@ -2,7 +2,7 @@ import { query } from "@anthropic-ai/claude-agent-sdk";
 import type { Effort, Role } from "./policy.ts";
 import type { ToolPolicy } from "./roles/tools.ts";
 
-export type Denial = { tool: string; reason: string; command: string };
+export type Denial = { tool: string; reason: string; detail: string };
 
 export type AgentRequest = {
   role: Role;
@@ -15,9 +15,13 @@ export type AgentRequest = {
   budgetUsd: number;
   tools: ToolPolicy;
   resume?: string;
-  /** Denies a Bash command before it runs; returns the reason, or null to allow. */
-  screenCommand: (command: string) => string | null;
+  /** Denies a tool call before it runs; returns the reason, or null to allow. */
+  screenTool: (toolName: string, input: Record<string, unknown>) => string | null;
   onDenial: (denial: Denial) => void;
+  /** OS-level sandbox settings, or undefined when policy opts out. */
+  sandbox?: Record<string, unknown>;
+  /** Permission deny rules for the in-process file tools. */
+  denyRules: string[];
 };
 
 export type AgentOutcome = {
@@ -39,6 +43,15 @@ export type AgentOutcome = {
  * money to test is the adapter itself.
  */
 export type AgentRunner = (req: AgentRequest) => Promise<AgentOutcome>;
+
+/** What a denial records: the command, or the path, whichever the tool carried. */
+function describeInput(input: Record<string, unknown>): string {
+  for (const key of ["command", "file_path", "notebook_path", "path", "pattern"]) {
+    const value = input?.[key];
+    if (typeof value === "string" && value !== "") return value;
+  }
+  return "";
+}
 
 const EMPTY: AgentOutcome = {
   ok: false, text: "", sessionId: "", costUsd: 0,
@@ -66,16 +79,25 @@ export const sdkRunner: AgentRunner = async (req) => {
         // .claude/settings.json could otherwise widen permissions.
         settingSources: [],
         permissionMode: "default",
+        // The flag-settings layer, which is the tier `strictAllowlist` is
+        // honoured from - a repository's own project settings are ignored for it.
+        settings: {
+          ...(req.sandbox ? { sandbox: req.sandbox } : {}),
+          permissions: { deny: req.denyRules },
+        } as never,
+        ...(req.sandbox ? { sandbox: req.sandbox as never } : {}),
+        // Hooks run first in the permission flow, ahead of deny rules and the
+        // permission mode, so this holds even where a tool would otherwise be
+        // auto-approved - which `autoAllowBashIfSandboxed` makes the norm.
         hooks: {
           PreToolUse: [{
             hooks: [async (input) => {
               if (input.hook_event_name !== "PreToolUse") return {};
               const pre = input as { tool_name: string; tool_input: unknown };
-              if (pre.tool_name !== "Bash") return {};
-              const command = String((pre.tool_input as { command?: unknown })?.command ?? "");
-              const reason = req.screenCommand(command);
+              const toolInput = (pre.tool_input ?? {}) as Record<string, unknown>;
+              const reason = req.screenTool(pre.tool_name, toolInput);
               if (!reason) return {};
-              req.onDenial({ tool: pre.tool_name, reason, command });
+              req.onDenial({ tool: pre.tool_name, reason, detail: describeInput(toolInput) });
               return {
                 hookSpecificOutput: {
                   hookEventName: "PreToolUse",
@@ -89,12 +111,10 @@ export const sdkRunner: AgentRunner = async (req) => {
         // Last barrier. Anything that still falls through to a prompt is denied:
         // an unattended daemon has nobody to ask.
         canUseTool: async (toolName, input) => {
-          if (toolName === "Bash") {
-            const reason = req.screenCommand(String((input as { command?: unknown })?.command ?? ""));
-            if (reason) {
-              req.onDenial({ tool: toolName, reason, command: String((input as { command?: unknown })?.command ?? "") });
-              return { behavior: "deny", message: reason };
-            }
+          const reason = req.screenTool(toolName, input);
+          if (reason) {
+            req.onDenial({ tool: toolName, reason, detail: describeInput(input) });
+            return { behavior: "deny", message: reason };
           }
           return { behavior: "allow" };
         },
@@ -130,8 +150,9 @@ export type ScriptedStep = {
   costUsd?: number;
   subtype?: string;
   errors?: string[];
-  /** Commands the scripted agent "tries" to run, so the guard is exercised too. */
-  attempts?: string[];
+  /** What the scripted agent "tries", so the guard is exercised too. A bare
+   *  string is a Bash command; an object names any tool and its input. */
+  attempts?: (string | { tool: string; input: Record<string, unknown> })[];
   /** What the agent did to the filesystem. Lets the whole pipeline be tested. */
   act?: (cwd: string) => void;
 };
@@ -149,9 +170,12 @@ export function scriptedRunner(steps: ScriptedStep[]): AgentRunner & { remaining
     if (step.role !== req.role) {
       throw new Error(`scripted step ${index - 1} is for \`${step.role}\` but \`${req.role}\` ran`);
     }
-    for (const command of step.attempts ?? []) {
-      const reason = req.screenCommand(command);
-      if (reason) req.onDenial({ tool: "Bash", reason, command });
+    for (const attempt of step.attempts ?? []) {
+      const { tool, input } = typeof attempt === "string"
+        ? { tool: "Bash", input: { command: attempt } }
+        : attempt;
+      const reason = req.screenTool(tool, input);
+      if (reason) req.onDenial({ tool, reason, detail: describeInput(input) });
     }
     step.act?.(req.cwd);
     return {

@@ -12,7 +12,7 @@ Design and rationale: [`SPEC.md`](./SPEC.md).
 
 ## Status
 
-Phase 1 complete and verified end to end against a real repository. See
+Phases 0-3 complete and verified end to end against a real repository. See
 `SPEC.md` § 16 for the phase plan.
 
 ## Design
@@ -31,6 +31,15 @@ double. Routing, tiering, scope enforcement, the state machine, git plumbing and
 the whole planner → builder → devops chain are exercised against the doubles
 over a real git repository with a real bare `origin`, so the only thing that
 costs money to test is the adapter itself.
+
+**Security is layered, and the layers do different jobs.** The OS sandbox
+(macOS Seatbelt, Linux/WSL2) is the only real enforcement over Bash — a regex
+cannot make a shell safe — and it runs with `allowUnsandboxedCommands: false`,
+against the SDK default, so the model cannot opt out of it. Permission deny
+rules cover the in-process file tools the Bash sandbox does not reach, written
+as `Edit(...)` because a `Write(...)` rule is never matched. Our own `screenTool`
+runs first in the permission flow, records every denial to the trace, and holds
+where no sandbox is available. See `SPEC.md` § 9.
 
 **One writer per resource.** Only `devops` may run `git` or `gh`, enforced by a
 PreToolUse screen with a `canUseTool` backstop; only `scribe` will write memory.
