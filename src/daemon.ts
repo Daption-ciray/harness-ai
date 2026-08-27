@@ -4,7 +4,9 @@ import { DAEMON_TRACE, emit, readAll } from "./events.ts";
 import { sdkRunner, type AgentRunner } from "./agent-runner.ts";
 import { ghForge, type Forge } from "./github.ts";
 import { LockBusy, withLock } from "./lock.ts";
-import { listTasks } from "./projection.ts";
+import { listTasks, spendSince } from "./projection.ts";
+import { removeWorktree } from "./git.ts";
+import { runSensors } from "./sensors.ts";
 import { isActiveState } from "./domain.ts";
 import { loadPolicy, type Policy } from "./policy.ts";
 import { originUrl, resolvePaths, type Paths } from "./paths.ts";
@@ -72,9 +74,65 @@ export type Tick = { policy: Policy; paths: Paths; state: State; count: number; 
  * Liveness is the state file's last_tick, not a `tick` event: an idle always-on
  * daemon should not grow its own log.
  */
+/**
+ * The daily window starts at the later of twenty-four hours ago and the last
+ * manual resume. Without that, resuming a daemon that paused on budget would
+ * pause it again on the very next tick, and the only way out would be waiting
+ * for the window to roll — so the control the human just used would not work.
+ */
+export function budgetWindowStart(events: ReturnType<typeof readAll>, now: number): string {
+  const rolling = new Date(now - 24 * 3600 * 1000).toISOString();
+  const resumed = [...events].reverse().find((e) => e.type === "resumed");
+  return resumed && resumed.ts > rolling ? resumed.ts : rolling;
+}
+
+/** Worktrees are only disposable once a task can no longer be advanced. */
+function reapWorktrees(ctx: Tick, tasks: ReturnType<typeof listTasks>): void {
+  for (const task of tasks) {
+    if (task.worktree === null) continue;
+    if (task.state !== "failed" && task.state !== "merged") continue;
+    try {
+      removeWorktree(ctx.paths.repoRoot, task.worktree);
+      emit(ctx.paths.eventsFile, task.id, "worktree_close", { dir: task.worktree });
+    } catch (e) {
+      console.error(`could not remove worktree for ${task.id}: ${(e as Error).message}`);
+    }
+  }
+}
+
+/**
+ * One scheduler pass. Phase 1 kept this sequential on purpose; concurrent
+ * builders arrive with a real dispatcher, and racing them before the chain was
+ * proven would only have hidden bugs.
+ *
+ * Liveness is the state file's last_tick, not a `tick` event: an idle always-on
+ * daemon should not grow its own log.
+ */
 export async function tick(ctx: Tick): Promise<void> {
   const events = readAll(ctx.paths.eventsFile);
-  const tasks = listTasks(events);
+
+  // The rail comes first. Everything below this line spends money.
+  const spent = spendSince(events, budgetWindowStart(events, Date.now()));
+  if (spent >= ctx.policy.budget.per_day_usd) {
+    emit(ctx.paths.eventsFile, DAEMON_TRACE, "budget_pause", {
+      spent_usd: spent, limit_usd: ctx.policy.budget.per_day_usd, window: "day",
+    });
+    if (ctx.policy.budget.on_exceed === "pause") {
+      writeState(ctx.paths.stateFile, { status: "paused" });
+      emit(ctx.paths.eventsFile, DAEMON_TRACE, "paused", { reason: "daily budget" });
+      console.error(
+        `daily budget of $${ctx.policy.budget.per_day_usd.toFixed(2)} spent ` +
+        `($${spent.toFixed(2)}); paused. \`harness resume\` starts a fresh window.`,
+      );
+    }
+    return;
+  }
+
+  runSensors({ policy: ctx.policy, paths: ctx.paths, forge: ctx.forge }, Date.now());
+
+  const tasks = listTasks(readAll(ctx.paths.eventsFile));
+  reapWorktrees(ctx, tasks);
+
   const pendingHuman = tasks.filter((t) => t.state === "escalated").length;
   const active = tasks.filter((t) => isActiveState(t.state));
 
@@ -166,6 +224,6 @@ export function setPaused(cwd: string, paused: boolean): string {
   if (!isAlive(state)) return "daemon is not running";
   if ((state.status === "paused") === paused) return `already ${paused ? "paused" : "running"}`;
   writeState(paths.stateFile, { status: paused ? "paused" : "running" });
-  emit(paths.eventsFile, DAEMON_TRACE, paused ? "paused" : "resumed", {});
+  emit(paths.eventsFile, DAEMON_TRACE, paused ? "paused" : "resumed", { reason: "manual" });
   return paused ? "paused - sensors and dispatch idle" : "resumed";
 }

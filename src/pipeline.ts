@@ -8,10 +8,10 @@ import type { Forge } from "./github.ts";
 import { emit, readAll, type HarnessEvent } from "./events.ts";
 import type { Paths } from "./paths.ts";
 import type { Policy } from "./policy.ts";
-import { projectOne, spendSince, type Task } from "./projection.ts";
+import { projectOne, type Task } from "./projection.ts";
 import { ADVERSARY, BUILDER, DEVOPS, PLANNER, REVIEW, SCRIBE, SECURITY } from "./roles/prompts.ts";
 import { appendDecision, loadDecisions, parseDecisions, renderContext, type Decision } from "./memory.ts";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, relative } from "node:path";
 import { ROLE_TOOLS } from "./roles/tools.ts";
 import { extractJson, runSpan, type SpanResult } from "./spawn.ts";
@@ -57,6 +57,9 @@ function brief(ctx: Ctx, events: ReturnType<typeof readAll>): string {
     repoRoot: ctx.paths.repoRoot,
     decisionsText: loadDecisions(ctx.paths.decisionsFile),
     events, policy: ctx.policy,
+    repoProfile: existsSync(ctx.paths.repoProfileFile)
+      ? readFileSync(ctx.paths.repoProfileFile, "utf8")
+      : undefined,
   });
 }
 
@@ -498,14 +501,8 @@ export function prBody(
 export async function advance(task: Task, ctx: Ctx): Promise<Task> {
   const reread = (): Task => projectOne(readAll(ctx.paths.eventsFile), task.id) ?? task;
 
-  const dayStart = new Date(Date.now() - 24 * 3600 * 1000).toISOString();
-  const spentToday = spendSince(readAll(ctx.paths.eventsFile), dayStart);
-  if (spentToday >= ctx.policy.budget.per_day_usd) {
-    emit(ctx.paths.eventsFile, task.id, "budget_pause", {
-      spent_usd: spentToday, limit_usd: ctx.policy.budget.per_day_usd, window: "day",
-    });
-    return reread();
-  }
+  // The daily rail lives in the daemon, which is the thing that can actually
+  // stop. Keeping a second copy here would give two places to drift.
   if (budgetLeft(ctx, task) <= 0) {
     emit(ctx.paths.eventsFile, task.id, "budget_pause", {
       spent_usd: task.cost_usd, limit_usd: ctx.policy.budget.per_task_usd, window: "task",
@@ -539,7 +536,11 @@ export async function advance(task: Task, ctx: Ctx): Promise<Task> {
 export function addBacklog(
   eventsFile: string,
   id: string,
-  input: { text: string; origin: "trusted" | "untrusted"; source: string },
+  input: { text: string; origin: "trusted" | "untrusted"; source: string; fingerprint?: string },
 ): HarnessEvent {
-  return emit(eventsFile, id, "backlog_add", input);
+  return emit(eventsFile, id, "backlog_add", {
+    ...input,
+    // A human asking twice means they want it twice.
+    fingerprint: input.fingerprint ?? `${input.source}:${id}`,
+  });
 }

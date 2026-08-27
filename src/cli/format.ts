@@ -21,9 +21,10 @@ export function describe(event: HarnessEvent): string {
   switch (event.type) {
     case "daemon_start": return `pid ${event.pid} · tick ${event.tick_seconds}s`;
     case "daemon_stop": return event.signal;
-    case "paused": return "dispatch idle";
-    case "resumed": return "dispatch live";
-    case "backlog_add": return `${event.origin} · ${event.source} · ${event.text}`;
+    case "paused": return `dispatch idle · ${event.reason}`;
+    case "resumed": return `dispatch live · ${event.reason}`;
+    case "backlog_add": return `${event.origin} · ${event.source} · ${event.text.split("\n")[0].slice(0, 70)}`;
+    case "sensor_ran": return `${event.sensor} · found ${event.found}, queued ${event.queued}${event.detail ? ` · ${event.detail}` : ""}`;
     case "task_planned":
       return `${event.task_class} · rung ${event.ladder_step} · ${event.scope.length} scope, ${event.acceptance.length} criteria`;
     case "ladder_advanced": return `rung ${event.from} → ${event.to} · ${event.reason}`;

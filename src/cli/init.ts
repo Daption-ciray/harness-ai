@@ -1,7 +1,8 @@
-import { copyFileSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { loadPolicy } from "../policy.ts";
 import { decisionsHeader } from "../memory.ts";
+import { applyProfile, detectRepo, renderProfile } from "../scout.ts";
 import { originUrl, resolvePaths } from "../paths.ts";
 
 export function init(cwd = process.cwd(), force = false): string[] {
@@ -10,12 +11,19 @@ export function init(cwd = process.cwd(), force = false): string[] {
 
   mkdirSync(paths.harnessDir, { recursive: true });
 
+  // Detection is deterministic: reading package.json does not need a model, and
+  // paying one to guess a test command is the reflex this project refuses.
+  const profile = detectRepo(paths.repoRoot);
+  const template = readFileSync(join(import.meta.dirname, "..", "default-policy.yaml"), "utf8");
+
   if (existsSync(paths.policyFile) && !force) {
     out.push(`kept    ${paths.policyFile} (already exists, --force to overwrite)`);
   } else {
-    copyFileSync(join(import.meta.dirname, "..", "default-policy.yaml"), paths.policyFile);
+    writeFileSync(paths.policyFile, applyProfile(template, profile), "utf8");
     out.push(`wrote   ${paths.policyFile}`);
   }
+  out.push(`repo    ${profile.ecosystem} · tests ${profile.test_cmd ?? "NOT DETECTED"}`);
+  for (const note of profile.notes) out.push(`        note: ${note}`);
 
   if (!existsSync(paths.decisionsFile)) {
     writeFileSync(paths.decisionsFile, decisionsHeader(), "utf8");
@@ -25,6 +33,11 @@ export function init(cwd = process.cwd(), force = false): string[] {
   for (const dir of [paths.sidecar, paths.worktreesDir]) {
     mkdirSync(dir, { recursive: true });
   }
+  writeFileSync(
+    paths.repoProfileFile,
+    renderProfile(profile, loadPolicy(paths.policyFile).repo.default_branch),
+    "utf8",
+  );
   out.push(`sidecar ${paths.sidecar}`);
 
   loadPolicy(paths.policyFile); // fail loudly now rather than at first tick

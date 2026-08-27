@@ -9,9 +9,9 @@ import { scratch } from "./helpers.ts";
 let clock = 0;
 function ev<T extends HarnessEvent["type"]>(
   trace_id: string, type: T, fields: Omit<Extract<HarnessEvent, { type: T }>, "ts" | "trace_id" | "type">,
-): HarnessEvent {
+): Extract<HarnessEvent, { type: T }> {
   clock += 1000;
-  return { ts: new Date(clock).toISOString(), trace_id, type, ...fields } as HarnessEvent;
+  return { ts: new Date(clock).toISOString(), trace_id, type, ...fields } as Extract<HarnessEvent, { type: T }>;
 }
 
 const span = (role: "planner" | "builder" | "devops", cost: number, ok = true) =>
@@ -23,7 +23,7 @@ const span = (role: "planner" | "builder" | "devops", cost: number, ok = true) =
   });
 
 const happyPath = (): HarnessEvent[] => [
-  ev("bk-1", "backlog_add", { text: "do a thing", origin: "trusted", source: "human" }),
+  ev("bk-1", "backlog_add", { text: "do a thing", origin: "trusted", source: "human", fingerprint: "fp"  }),
   ev("bk-1", "span_end", span("planner", 0.2)),
   ev("bk-1", "task_planned", {
     role: "planner", task_class: "routine", scope: ["src/**"],
@@ -84,7 +84,7 @@ test("a duplicated backlog_add does not reset a task in flight", () => {
 test("traces are isolated - a failure on one task leaves the other alone", () => {
   const log = [
     ...happyPath(),
-    ev("bk-2", "backlog_add", { text: "other", origin: "untrusted", source: "open_issues" }),
+    ev("bk-2", "backlog_add", { text: "other", origin: "untrusted", source: "open_issues", fingerprint: "fp"  }),
     ev("bk-2", "task_failed", { reason: "underspecified" }),
   ];
   const tasks = project(log);
@@ -100,7 +100,7 @@ test("an event for a trace that was never opened is ignored, not fatal", () => {
 
 test("failed builder spans count rounds; successful ones clear the error", () => {
   const log = [
-    ev("bk-1", "backlog_add", { text: "t", origin: "trusted", source: "human" }),
+    ev("bk-1", "backlog_add", { text: "t", origin: "trusted", source: "human", fingerprint: "fp"  }),
     ev("bk-1", "span_end", span("builder", 0.1, false)),
     ev("bk-1", "ladder_advanced", { from: 0, to: 1, reason: "boom" }),
     ev("bk-1", "span_end", span("builder", 0.1, false)),
@@ -128,16 +128,16 @@ test("apply is pure - the input task is never mutated", () => {
 test("ids come from the log's high-water mark, so a gap is never reused", () => {
   assert.equal(nextTaskId([]), "bk-1");
   const log = [
-    ev("bk-1", "backlog_add", { text: "a", origin: "trusted", source: "human" }),
-    ev("bk-7", "backlog_add", { text: "b", origin: "trusted", source: "human" }),
+    ev("bk-1", "backlog_add", { text: "a", origin: "trusted", source: "human", fingerprint: "fp"  }),
+    ev("bk-7", "backlog_add", { text: "b", origin: "trusted", source: "human", fingerprint: "fp"  }),
   ];
   assert.equal(nextTaskId(log), "bk-8");
 });
 
 test("listTasks orders by creation, stably", () => {
   const log = [
-    ev("bk-2", "backlog_add", { text: "second", origin: "trusted", source: "human" }),
-    ev("bk-1", "backlog_add", { text: "first", origin: "trusted", source: "human" }),
+    ev("bk-2", "backlog_add", { text: "second", origin: "trusted", source: "human", fingerprint: "fp"  }),
+    ev("bk-1", "backlog_add", { text: "first", origin: "trusted", source: "human", fingerprint: "fp"  }),
   ];
   assert.deepEqual(listTasks(log).map((t) => t.id), ["bk-2", "bk-1"], "log order is creation order");
 });
@@ -151,7 +151,7 @@ test("daily spend counts only spans inside the window", () => {
 
 test("a partial final line from a killed process is skipped, not fatal", () => {
   const file = join(scratch(), "events.jsonl");
-  emit(file, "bk-1", "backlog_add", { text: "t", origin: "trusted", source: "human" });
+  emit(file, "bk-1", "backlog_add", { text: "t", origin: "trusted", source: "human", fingerprint: "fp"  });
   emit(file, "bk-1", "build_done", { files: ["a"], revision: 1 });
   appendFileSync(file, '{"ts":"2026-01-01T00:00:00.000Z","trace_i');
   const events = readAll(file);

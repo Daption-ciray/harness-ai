@@ -412,6 +412,11 @@ merge:
     - public_api_change: true
     - acceptance_unmet: any
 
+memory:
+  context_budget_chars: 8000   # karakterle, çünkü zorlanan şey o
+  decisions_in_context: 8
+  pitfall_threshold: 3
+
 sensors:
   broken_tests: { enabled: true,  every: "15m", origin: trusted }
   open_issues:  { enabled: true,  every: "30m", origin: untrusted }
@@ -435,6 +440,67 @@ permissions:
 ```
 
 ---
+
+## 11b. Sensörler ve always-on
+
+### Sensörler ajan değil, kod
+
+Test suite'inin kırmızı olduğunu fark etmek model gerektirmez. Her on beş
+dakikada bir bunu fark etmesi için modele para ödemek, bu projenin reddettiği
+refleksin ta kendisi.
+
+| Sensör | Bulduğu | Parmak izi |
+|---|---|---|
+| `broken_tests` | kırmızı suite | `broken_tests` (tekil) |
+| `open_issues` | açık issue | `issue:<n>` |
+| `todo_harvest` | `TODO`/`FIXME` işareti | `todo:<dosya>:<özet>` |
+| `cve_scan` | yüksek önemde advisory | `cve_scan` |
+
+### Parmak izi problemin, gözlemin değil
+
+Sensör her 15 dakikada bakıyor. Parmak izi olmasa günde 96 kopya üretirdi.
+Bastırılan durumlar: aktif olan her şey, `escalated` (zaten insanın önünde) ve
+`failed` (harness denedi, tam fiyatla tekrar denemesin).
+
+**`merged` kasten listede yok:** bir düzeltme merge olduktan sonra sensör hâlâ
+problemi görüyorsa bu **yeni bilgidir**.
+
+Test suite'i, kaç vaka kırmızı olursa olsun, yeşil olana kadar **tek problem**.
+Bölmek keyfi test çıktısını ayrıştırmak demekti; başarısız çıktı görev metniyle
+gidiyor, planner detayı oradan alıyor.
+
+### Hedef repo'nun komutları harness'ın ortamını miras almaz
+
+Teorik değil, ölçüldü: Node test runner'ı içinden koşulduğunda `NODE_TEST_CONTEXT`
+hedef repo'nun `node --test`'ine sızdı, o da ebeveyne rapor verip sıfır olmayan
+çıkış kodu vermedi — **kırmızı suite yeşil döndü, sensör bir sorun görmedi.**
+`cleanEnv()` bu değişkenleri, `NODE_OPTIONS`'ı, coverage değişkenlerini ve npm'in
+`npm_*` bloğunu siler. Aynı sızıntı `worktree_setup_cmd` için de geçerliydi.
+
+Her repo komutunun timeout'u var — always-on döngü asılı kalan bir suite'i
+kaldıramaz.
+
+### Bütçe rayı daemon'da
+
+Günlük ray daemon'da, çünkü **durabilen şey o**. Görev başına ray `advance`'ta.
+İki yerde tutmak ikisinin ayrışması demekti.
+
+Pencere `max(24 saat önce, son manuel resume)`. Bu olmadan bütçeden duraklamış
+bir daemon'ı resume etmek onu bir sonraki tick'te yine duraklatırdı — insanın az
+önce kullandığı kontrol çalışmazdı.
+
+### `scout` — deterministik repo tanıma
+
+`harness init` `package.json` / `go.mod` / `Cargo.toml` / `pyproject.toml` /
+`Makefile` okuyup test, build ve lint komutlarını çıkarır. Çıkaramazsa **bunu
+söyler** ve yer tutucu bırakır: kendinden emin yanlış cevaptan ucuz.
+
+Node repolarında `worktree_setup_cmd` da buradan gelir.
+
+### Worktree geri kazanımı
+
+`failed` ve `merged` görevlerin worktree'si silinir. `escalated` olanınki kalır —
+insan hâlâ bakıyor olabilir, ve sayısı WIP limitiyle sınırlı.
 
 ## 12. Event / trace şeması
 

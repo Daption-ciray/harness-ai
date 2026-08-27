@@ -15,10 +15,15 @@ import type { Finding, Origin, TaskClass } from "./domain.ts";
 export type EventShapes = {
   daemon_start: { pid: number; slug: string; tick_seconds: number };
   daemon_stop: { signal: string };
-  paused: Record<string, never>;
-  resumed: Record<string, never>;
+  paused: { reason: string };
+  resumed: { reason: string };
 
-  backlog_add: { text: string; origin: Origin; source: string };
+  /**
+   * `fingerprint` is what stops a sensor queueing the same problem every time it
+   * looks. Stable for the problem, not for the observation.
+   */
+  backlog_add: { text: string; origin: Origin; source: string; fingerprint: string };
+  sensor_ran: { sensor: string; found: number; queued: number; detail: string };
   task_planned: {
     role: Role; task_class: TaskClass; scope: string[];
     acceptance: string[]; steps: string[]; ladder_step: number;

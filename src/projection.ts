@@ -13,6 +13,7 @@ export type Task = {
   text: string;
   origin: Origin;
   source: string;
+  fingerprint: string;
   state: TaskState;
   task_class: TaskClass;
   scope: string[];
@@ -37,9 +38,9 @@ export type Task = {
   updated_at: string;
 };
 
-function seed(id: string, ts: string, text: string, origin: Origin, source: string): Task {
+function seed(id: string, ts: string, event: Extract<HarnessEvent, { type: "backlog_add" }>): Task {
   return {
-    id, text, origin, source,
+    id, text: event.text, origin: event.origin, source: event.source, fingerprint: event.fingerprint,
     state: "queued", task_class: "routine",
     scope: [], acceptance: [], steps: [],
     branch: null, worktree: null, setup_artifacts: [], pr: null, quarantined: false,
@@ -133,7 +134,7 @@ export function project(events: HarnessEvent[]): Map<string, Task> {
     if (event.type === "backlog_add") {
       // A replayed backlog_add for a known trace must not reset it.
       if (!tasks.has(event.trace_id)) {
-        tasks.set(event.trace_id, seed(event.trace_id, event.ts, event.text, event.origin, event.source));
+        tasks.set(event.trace_id, seed(event.trace_id, event.ts, event));
       }
       continue;
     }
@@ -164,6 +165,21 @@ export function nextTaskId(events: HarnessEvent[]): string {
     .map((e) => Number(e.trace_id.replace(/^bk-/, "")))
     .filter((n) => Number.isFinite(n));
   return `bk-${(used.length ? Math.max(...used) : 0) + 1}`;
+}
+
+/**
+ * States a sensor must not queue over. A problem already in flight, or already
+ * sitting in front of a human, does not need queueing again; one the harness
+ * failed at does not need retrying at full price every time the sensor looks.
+ */
+const SUPPRESSING: readonly TaskState[] = ["queued", "planned", "verifying", "scribing", "integrating", "escalated", "failed"];
+
+/**
+ * Whether this problem is already accounted for. `merged` is absent on purpose:
+ * if a sensor still sees a problem after a fix merged, that is new information.
+ */
+export function isFingerprintSuppressed(events: HarnessEvent[], fingerprint: string): boolean {
+  return listTasks(events).some((t) => t.fingerprint === fingerprint && SUPPRESSING.includes(t.state));
 }
 
 /** Total spend inside a rolling window, for the daily budget rail. */

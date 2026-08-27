@@ -1,5 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
+import { cleanEnv } from "./env.ts";
 
 export class GitError extends Error {}
 
@@ -112,7 +113,7 @@ export function runWorktreeSetup(dir: string, repoRoot: string, command: string 
   try {
     execFileSync(command, {
       cwd: dir, shell: true, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"],
-      env: { ...process.env, HARNESS_REPO_ROOT: repoRoot },
+      env: cleanEnv({ HARNESS_REPO_ROOT: repoRoot }),
     });
     return null;
   } catch (e) {

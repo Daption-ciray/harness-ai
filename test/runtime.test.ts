@@ -3,7 +3,7 @@ import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { emit, isType, readAll, readTrace } from "../src/events.ts";
-import { isAlive, readState, writeState } from "../src/daemon.ts";
+import { budgetWindowStart, isAlive, readState, writeState } from "../src/daemon.ts";
 import { describe } from "../src/cli/format.ts";
 import { scratch } from "./helpers.ts";
 
@@ -74,4 +74,25 @@ test("a span records what the prefix cache actually did", () => {
   const [event] = readAll(file);
   assert.ok(isType(event, "span_end") && event.cache_read_tokens === 12582);
   assert.match(describe(event), /12582 cached/);
+});
+
+test("resuming starts a fresh budget window, so the control the human used works", () => {
+  // Without this, resuming a daemon that paused on budget would pause it again
+  // on the very next tick and the only way out would be waiting a day.
+  const now = Date.parse("2026-03-01T12:00:00.000Z");
+  const hoursAgo = (h: number) => new Date(now - h * 3600_000).toISOString();
+
+  const rolling = budgetWindowStart([], now);
+  assert.equal(rolling, new Date(now - 24 * 3600_000).toISOString());
+
+  const withResume = budgetWindowStart([
+    { ts: hoursAgo(30), trace_id: "daemon", type: "resumed", reason: "manual" },
+    { ts: hoursAgo(2), trace_id: "daemon", type: "resumed", reason: "manual" },
+  ], now);
+  assert.equal(withResume, hoursAgo(2), "the latest resume wins");
+
+  const staleResume = budgetWindowStart([
+    { ts: hoursAgo(48), trace_id: "daemon", type: "resumed", reason: "manual" },
+  ], now);
+  assert.equal(staleResume, rolling, "a resume older than the window does not widen it");
 });

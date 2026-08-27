@@ -12,7 +12,7 @@ Design and rationale: [`SPEC.md`](./SPEC.md).
 
 ## Status
 
-Phases 0-4 complete and verified end to end against a real repository. See
+Phases 0-5 complete and verified end to end against a real repository. See
 `SPEC.md` § 16 for the phase plan.
 
 ## Design
@@ -31,6 +31,14 @@ double. Routing, tiering, scope enforcement, the state machine, git plumbing and
 the whole planner → builder → devops chain are exercised against the doubles
 over a real git repository with a real bare `origin`, so the only thing that
 costs money to test is the adapter itself.
+
+**Work comes from sensors, and they are plain code.** Noticing that the test
+suite is red does not need a model, so nothing pays one to notice it every
+fifteen minutes. Each candidate carries a fingerprint that is stable for the
+*problem* rather than the observation, which is what stops a sensor queueing the
+same red suite ninety-six times a day. `harness init` works out how to build and
+test the repository the same way — by reading `package.json`, `go.mod`, a
+`Makefile` — and says so plainly when it cannot tell.
 
 **Memory is derived, not maintained.** The brief every agent is given is
 rendered from `decisions.md` — which holds only decisions that merged, because

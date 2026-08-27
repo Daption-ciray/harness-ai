@@ -149,7 +149,7 @@ test("the brief is byte-stable while the decisions are - which is what keeps the
   const noisy: HarnessEvent[] = [
     { ts: new Date().toISOString(), trace_id: "bk-9", type: "span_start", span_id: "s", role: "builder", model: "m", effort: "high", ladder_step: 0 },
     { ts: new Date().toISOString(), trace_id: "bk-9", type: "escalate", reason: "unrelated" },
-    { ts: new Date().toISOString(), trace_id: "bk-9", type: "backlog_add", text: "other work", origin: "trusted", source: "human" },
+    { ts: new Date().toISOString(), trace_id: "bk-9", type: "backlog_add", text: "other work", origin: "trusted", source: "human", fingerprint: "human:bk-9" },
   ];
   assert.equal(context({ repoRoot: repo, decisions, events: noisy }), first,
     "unrelated activity must not move a single byte of the brief");
