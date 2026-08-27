@@ -13,6 +13,8 @@ export type CreatePrOptions = { branch: string; base: string; title: string; bod
  */
 export type Forge = {
   findPr(cwd: string, branch: string): PullRequest | null;
+  /** State of every pull request the harness opened, by number. One call. */
+  prStates(cwd: string): Map<number, string>;
   createPr(cwd: string, opts: CreatePrOptions): PullRequest;
   addLabels(cwd: string, prNumber: number, labels: string[]): void;
   openIssues(cwd: string, limit?: number): Issue[];
@@ -45,6 +47,13 @@ export const ghForge: Forge = {
   findPr(cwd, branch) {
     const out = gh(["pr", "list", "--head", branch, "--state", "all", "--json", "number,url,isDraft,state"], cwd);
     return (JSON.parse(out || "[]") as PullRequest[])[0] ?? null;
+  },
+
+  prStates(cwd) {
+    const out = gh(["pr", "list", "--state", "all", "--limit", "100",
+      "--label", "harness", "--json", "number,state"], cwd);
+    const list = JSON.parse(out || "[]") as { number: number; state: string }[];
+    return new Map(list.map((p) => [p.number, p.state]));
   },
 
   createPr(cwd, opts) {
@@ -92,6 +101,9 @@ export function memoryForge(issues: Issue[] = []): MemoryForge {
     issues,
     findPr(_cwd, branch) {
       return forge.prs.find((p) => p.branch === branch) ?? null;
+    },
+    prStates() {
+      return new Map(forge.prs.map((p) => [p.number, p.state]));
     },
     createPr(_cwd, opts) {
       const existing = forge.prs.find((p) => p.branch === opts.branch);

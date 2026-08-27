@@ -5,10 +5,10 @@ import { test } from "node:test";
 import { scriptedRunner, type ScriptedStep } from "../src/agent-runner.ts";
 import { readState, tick, writeState, type Tick } from "../src/daemon.ts";
 import { readAll } from "../src/events.ts";
-import { memoryForge } from "../src/github.ts";
+import { memoryForge, type MemoryForge } from "../src/github.ts";
 import { addBacklog } from "../src/pipeline.ts";
 import type { Policy } from "../src/policy.ts";
-import { listTasks, projectOne } from "../src/projection.ts";
+import { isFingerprintSuppressed, listTasks, projectOne, type Task } from "../src/projection.ts";
 import { fencedJson, toyRepo } from "./helpers.ts";
 
 const PLAN = { scope: ["src/**"], acceptance: ["test: npm test passes"], steps: ["edit"] };
@@ -141,4 +141,51 @@ test("an idle daemon writes nothing to the log", async () => {
   const h = harness([]);
   await h.pump(10);
   assert.deepEqual(readAll(h.paths.eventsFile), []);
+});
+
+test("the harness learns its pull request merged, and stops suppressing the problem", async () => {
+  // Without this a task sits in `escalated` for ever, and since `escalated`
+  // suppresses the fingerprint, a merged fix would permanently blind the sensor
+  // that found the problem to its next occurrence.
+  const h = harness(CHAIN(1));
+  addBacklog(h.paths.eventsFile, "bk-1", {
+    text: "the suite is red", origin: "trusted", source: "broken_tests", fingerprint: "broken_tests",
+  });
+  await h.pump(8);
+
+  const escalated = projectOne(readAll(h.paths.eventsFile), "bk-1") as Task;
+  assert.equal(escalated.state, "escalated");
+  assert.equal(isFingerprintSuppressed(readAll(h.paths.eventsFile), "broken_tests"), true);
+
+  (h.ctx.forge as MemoryForge).prs[0].state = "MERGED";
+  await h.pump(1);
+
+  const merged = projectOne(readAll(h.paths.eventsFile), "bk-1") as Task;
+  assert.equal(merged.state, "merged");
+  assert.ok(!existsSync(escalated.worktree as string), "and the worktree is reclaimed");
+  assert.equal(isFingerprintSuppressed(readAll(h.paths.eventsFile), "broken_tests"), false,
+    "the same problem can be found again");
+});
+
+test("a pull request closed without merging fails the task rather than stranding it", async () => {
+  const h = harness(CHAIN(1));
+  addBacklog(h.paths.eventsFile, "bk-1", { text: "work", origin: "trusted", source: "human" });
+  await h.pump(8);
+
+  (h.ctx.forge as MemoryForge).prs[0].state = "CLOSED";
+  await h.pump(1);
+
+  const task = projectOne(readAll(h.paths.eventsFile), "bk-1") as Task;
+  assert.equal(task.state, "failed");
+  assert.match(task.last_error as string, /closed without merging/);
+});
+
+test("a forge that is down does not take the loop down with it", async () => {
+  const h = harness(CHAIN(1));
+  addBacklog(h.paths.eventsFile, "bk-1", { text: "work", origin: "trusted", source: "human" });
+  await h.pump(8);
+
+  h.ctx.forge.prStates = () => { throw new Error("gh: API rate limit exceeded"); };
+  await assert.doesNotReject(h.pump(2));
+  assert.equal(projectOne(readAll(h.paths.eventsFile), "bk-1")?.state, "escalated");
 });

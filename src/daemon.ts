@@ -86,6 +86,39 @@ export function budgetWindowStart(events: ReturnType<typeof readAll>, now: numbe
   return resumed && resumed.ts > rolling ? resumed.ts : rolling;
 }
 
+/**
+ * Learns what happened to the pull requests it opened.
+ *
+ * Without this a task sits in `escalated` for ever: its worktree is never
+ * reclaimed, and — worse — `escalated` suppresses that fingerprint, so the
+ * sensor which found the problem can never queue it again. A merged fix would
+ * permanently blind the harness to the next occurrence of the same problem.
+ */
+function reconcilePullRequests(ctx: Tick, tasks: ReturnType<typeof listTasks>): void {
+  const open = tasks.filter((t) => t.state === "escalated" && t.pr !== null);
+  if (open.length === 0) return;
+
+  let states: Map<number, string>;
+  try {
+    states = ctx.forge.prStates(ctx.paths.repoRoot);
+  } catch (e) {
+    // A forge that is down must not take the loop down with it.
+    console.error(`could not read pull request states: ${(e as Error).message}`);
+    return;
+  }
+
+  for (const task of open) {
+    const state = states.get((task.pr as { number: number }).number);
+    if (state === "MERGED") {
+      emit(ctx.paths.eventsFile, task.id, "merge", { sha: task.pr?.url ?? "", by: "human" });
+    } else if (state === "CLOSED") {
+      emit(ctx.paths.eventsFile, task.id, "task_failed", {
+        reason: "the pull request was closed without merging",
+      });
+    }
+  }
+}
+
 /** Worktrees are only disposable once a task can no longer be advanced. */
 function reapWorktrees(ctx: Tick, tasks: ReturnType<typeof listTasks>): void {
   for (const task of tasks) {
@@ -130,7 +163,9 @@ export async function tick(ctx: Tick): Promise<void> {
 
   runSensors({ policy: ctx.policy, paths: ctx.paths, forge: ctx.forge }, Date.now());
 
-  const tasks = listTasks(readAll(ctx.paths.eventsFile));
+  let tasks = listTasks(readAll(ctx.paths.eventsFile));
+  reconcilePullRequests(ctx, tasks);
+  tasks = listTasks(readAll(ctx.paths.eventsFile));
   reapWorktrees(ctx, tasks);
 
   const pendingHuman = tasks.filter((t) => t.state === "escalated").length;
