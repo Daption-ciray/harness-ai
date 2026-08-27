@@ -74,8 +74,14 @@ export function cancel(cwd: string, id: string, reason: string): string {
   return `${id}  ${task.state} → failed  (${reason})`;
 }
 
-export function tasks(cwd: string): string {
+export function tasks(cwd: string, json = false): string {
   const all = listTasks(readAll(resolvePaths(cwd).eventsFile));
+  if (json) {
+    return JSON.stringify(all.map((t) => ({
+      id: t.id, state: t.state, task_class: t.task_class, origin: t.origin,
+      cost_usd: t.cost_usd, pr: t.pr, text: t.text, last_error: t.last_error,
+    })));
+  }
   if (all.length === 0) return 'no tasks — `harness backlog add "<what to do>"`';
   return all.map((t) => [
     t.id.padEnd(8), t.state.padEnd(10), t.task_class.padEnd(8), t.origin.padEnd(9),

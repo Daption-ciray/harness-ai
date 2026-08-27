@@ -16,7 +16,7 @@ const USAGE = `harness — multi-agent development harness
   harness ask "<what you want>"  ask for a change; also --file <path> or stdin
   harness answer <id> "<text>"  answer a question the planner stopped on
   harness waiting               everything that needs you, and why
-  harness tasks                 list every task and its state
+  harness tasks [--json]         list every task and its state
   harness run [<id>]            advance one task by one stage, in the foreground
   harness cancel <id> "<why>"   retire a task; recorded, never deleted
 `;
@@ -28,6 +28,7 @@ const { positionals, values } = parseArgs({
     file: { type: "string" },
     untrusted: { type: "boolean", default: false },
     help: { type: "boolean", default: false },
+    json: { type: "boolean", default: false },
   },
 });
 
@@ -50,7 +51,7 @@ try {
   } else if (cmd === "status") {
     console.log(status(cwd));
   } else if (cmd === "tasks") {
-    console.log(tasks(cwd));
+    console.log(tasks(cwd, values.json));
   } else if (cmd === "run") {
     console.log(await runOnce(cwd, rest[0]));
   } else if (cmd === "ask" || (cmd === "backlog" && rest[0] === "add")) {
