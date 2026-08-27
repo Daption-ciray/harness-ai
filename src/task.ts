@@ -26,6 +26,8 @@ export type Task = {
   steps: string[];
   branch: string | null;
   worktree: string | null;
+  /** Left behind by worktree_setup_cmd. Never the builder's doing, so never staged and never a scope violation. */
+  setup_artifacts: string[];
   pr: { number: number; url: string } | null;
   rounds: number;
   ladder_step: number;
@@ -73,7 +75,7 @@ export function addBacklog(
   const task: Task = {
     id: nextId(paths), text: input.text, origin: input.origin, source: input.source,
     state: "queued", class: "routine", scope: [], acceptance: [], steps: [],
-    branch: null, worktree: null, pr: null,
+    branch: null, worktree: null, setup_artifacts: [], pr: null,
     rounds: 0, ladder_step: 0, cost_usd: 0, last_error: null,
     created_at: now, updated_at: now,
   };

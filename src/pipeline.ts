@@ -1,12 +1,13 @@
 import { matchesGlob } from "node:path";
 import { join } from "node:path";
 import { append } from "./events.ts";
-import { changedFiles, commitAll, diffStat, ensureWorktree, git, push, runWorktreeSetup } from "./git.ts";
+import { branchFiles, changedFiles, commitAll, diffStat, ensureWorktree, git, push, runWorktreeSetup, untrackedFiles } from "./git.ts";
 import { addLabels, createPr } from "./github.ts";
 import type { Paths } from "./paths.ts";
 import type { Policy } from "./policy.ts";
 import { BUILDER, DEVOPS, PLANNER } from "./roles/prompts.ts";
 import { extractJson, spawn, type SpanResult } from "./spawn.ts";
+import { ROLE_TOOLS } from "./roles/tools.ts";
 import { classify, ladderStartFor, resolveTier } from "./tier.ts";
 import { writeTask, type Task } from "./task.ts";
 
@@ -60,7 +61,7 @@ async function plan(task: Task, ctx: Ctx): Promise<Task> {
     role: "planner", traceId: task.id, systemPrompt: PLANNER,
     prompt: `Backlog item ${task.id}:\n\n${wrap(task)}`,
     cwd: ctx.paths.repoRoot, tier: tier.tier, ladderStep: step,
-    budgetUsd: budgetLeft(ctx, task), tools: ["Read", "Glob", "Grep"],
+    budgetUsd: budgetLeft(ctx, task), tools: ROLE_TOOLS.planner,
   }, ctx.policy, ctx.paths.eventsFile);
 
   let next = afterSpan(task, span);
@@ -78,7 +79,11 @@ async function plan(task: Task, ctx: Ctx): Promise<Task> {
   }
 
   const cls = classify(ctx.policy, { paths: out.scope, source: task.source });
-  next = { ...next, state: "planned", class: cls, scope: out.scope, acceptance: out.acceptance, steps: out.steps ?? [] };
+  // The planner is what determines the class, so the ladder start is only
+  // knowable now. Without this a task reclassified as risky would still run
+  // the cheap rung its `routine` guess had picked.
+  const ladder = Math.max(next.ladder_step, ladderStartFor(ctx.policy, cls));
+  next = { ...next, state: "planned", class: cls, ladder_step: ladder, scope: out.scope, acceptance: out.acceptance, steps: out.steps ?? [] };
   append(ctx.paths.eventsFile, {
     trace_id: task.id, type: "task_planned", role: "planner", outcome: cls,
     payload: { scope: out.scope, acceptance: out.acceptance },
@@ -93,10 +98,14 @@ async function build(task: Task, ctx: Ctx): Promise<Task> {
 
   const branch = task.branch ?? branchFor(task);
   const dir = task.worktree ?? join(ctx.paths.worktreesDir, task.id);
-  ensureWorktree(ctx.paths.repoRoot, dir, branch, ctx.policy.repo.default_branch);
-  const setupError = runWorktreeSetup(dir, ctx.paths.repoRoot, ctx.policy.repo.worktree_setup_cmd);
-  append(ctx.paths.eventsFile, { trace_id: task.id, type: "worktree_open", payload: { branch, dir, setupError } });
-  let next = writeTask(ctx.paths, { ...task, branch, worktree: dir });
+  // Setup and its exclusions belong to a fresh worktree only. On a retry the
+  // builder's own new files are untracked too, and excluding those would quietly
+  // drop the work from the commit.
+  const { created } = ensureWorktree(ctx.paths.repoRoot, dir, branch, ctx.policy.repo.default_branch);
+  const setupError = created ? runWorktreeSetup(dir, ctx.paths.repoRoot, ctx.policy.repo.worktree_setup_cmd) : null;
+  const setupArtifacts = created ? untrackedFiles(dir) : task.setup_artifacts;
+  append(ctx.paths.eventsFile, { trace_id: task.id, type: "worktree_open", payload: { branch, dir, setupError, setupArtifacts } });
+  let next = writeTask(ctx.paths, { ...task, branch, worktree: dir, setup_artifacts: setupArtifacts });
 
   const prompt = [
     `Backlog item ${task.id}:\n\n${wrap(task)}`,
@@ -109,14 +118,14 @@ async function build(task: Task, ctx: Ctx): Promise<Task> {
 
   const span = await spawn({
     role: "builder", traceId: task.id, systemPrompt: BUILDER, prompt,
-    cwd: dir, tier: tier.tier, ladderStep: step, budgetUsd: budgetLeft(ctx, next),
+    cwd: dir, tier: tier.tier, ladderStep: step, budgetUsd: budgetLeft(ctx, next), tools: ROLE_TOOLS.builder,
   }, ctx.policy, ctx.paths.eventsFile);
 
   next = afterSpan(next, span);
   if (!span.ok) {
     return writeTask(ctx.paths, { ...next, ladder_step: step + 1, rounds: next.rounds + 1, last_error: span.errors[0] ?? span.subtype });
   }
-  if (changedFiles(dir).length === 0) {
+  if (changedFiles(dir).filter((f) => !setupArtifacts.includes(f)).length === 0) {
     return escalate(ctx, next, "builder finished without changing anything");
   }
   return writeTask(ctx.paths, { ...next, state: "built", last_error: null });
@@ -132,9 +141,17 @@ async function integrate(task: Task, ctx: Ctx): Promise<Task> {
   const branch = task.branch as string;
   const base = ctx.policy.repo.default_branch;
 
-  const files = changedFiles(dir);
+  // devops judges what the pull request will contain: the whole branch, not just
+  // what is still uncommitted. A re-run has already committed part of the work,
+  // and showing only the working tree makes that part look missing.
+  const pending = changedFiles(dir).filter((f) => !task.setup_artifacts.includes(f));
+  const files = [...new Set([...branchFiles(dir, base), ...pending])];
   const violations = scopeViolations(files, task.scope);
-  const diff = git(["diff", "--stat"], dir) + "\n\n" + git(["diff"], dir).slice(0, 20000);
+  const diff = [
+    git(["diff", "--stat", `${base}...HEAD`], dir),
+    git(["diff", `${base}...HEAD`], dir).slice(0, 15000),
+    pending.length ? `\n--- not yet committed ---\n${git(["diff"], dir).slice(0, 5000)}` : "",
+  ].filter(Boolean).join("\n\n");
 
   const tier = resolveTier(ctx.policy, "devops", task.class, task.ladder_step);
   if (tier.kind === "escalate") return escalate(ctx, task, "devops exhausted the escalation ladder");
@@ -149,7 +166,7 @@ async function integrate(task: Task, ctx: Ctx): Promise<Task> {
   const span = await spawn({
     role: "devops", traceId: task.id, systemPrompt: DEVOPS, prompt,
     cwd: dir, tier: tier.tier, ladderStep: task.ladder_step,
-    budgetUsd: budgetLeft(ctx, task), tools: [],
+    budgetUsd: budgetLeft(ctx, task), tools: ROLE_TOOLS.devops,
   }, ctx.policy, ctx.paths.eventsFile);
 
   let next = afterSpan(task, span);
@@ -158,7 +175,9 @@ async function integrate(task: Task, ctx: Ctx): Promise<Task> {
     return writeTask(ctx.paths, { ...next, ladder_step: next.ladder_step + 1, last_error: "devops returned no commit message" });
   }
 
-  const sha = commitAll(dir, out.commit_message);
+  // Out-of-scope files are never staged. devops already reports them as concerns.
+  const inScope = pending.filter((f) => !violations.includes(f));
+  const sha = commitAll(dir, out.commit_message, inScope);
   push(dir, branch);
   const stat = diffStat(dir, base);
   const concerns = [...(out.concerns ?? []), ...violations.map((v) => `outside declared scope: ${v}`)];

@@ -25,7 +25,11 @@ export function createPr(
   opts: { branch: string; base: string; title: string; body: string; draft: boolean },
 ): PullRequest {
   const existing = findPr(cwd, opts.branch);
-  if (existing) return existing;
+  if (existing) {
+    // Idempotent, but not stale: a re-run has newer concerns to report.
+    gh(["pr", "edit", String(existing.number), "--title", opts.title, "--body", opts.body], cwd);
+    return existing;
+  }
   const args = ["pr", "create", "--head", opts.branch, "--base", opts.base,
     "--title", opts.title, "--body", opts.body];
   if (opts.draft) args.push("--draft");
@@ -35,12 +39,27 @@ export function createPr(
   return created;
 }
 
+const LABEL_COLOURS: Record<string, string> = {
+  harness: "5319e7", "needs:human": "d93f0b", "blocked:devops": "b60205",
+  "blocked:security": "b60205", stale: "fbca04",
+};
+
+/** `gh pr edit --add-label` fails outright on a label the repo does not have. */
+function ensureLabel(cwd: string, name: string): void {
+  try {
+    gh(["label", "create", name, "--color", LABEL_COLOURS[name] ?? "ededed"], cwd);
+  } catch {
+    // Already exists, which is the common case.
+  }
+}
+
 export function addLabels(cwd: string, prNumber: number, labels: string[]): void {
   if (labels.length === 0) return;
+  for (const label of labels) ensureLabel(cwd, label);
   try {
     gh(["pr", "edit", String(prNumber), ...labels.flatMap((l) => ["--add-label", l])], cwd);
   } catch {
-    // A label that does not exist in the repo must not sink the run.
+    // A labelling failure must not sink a task that is otherwise complete.
   }
 }
 

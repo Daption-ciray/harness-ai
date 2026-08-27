@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { append } from "./events.ts";
 import { canUseTool, preToolUseHook, type Denial, type GuardContext } from "./permissions.ts";
 import type { Policy, Role } from "./policy.ts";
+import type { ToolPolicy } from "./roles/tools.ts";
 
 export type Tier = { model: string; effort: "low" | "medium" | "high" | "xhigh" | "max"; maxTurns: number };
 
@@ -16,8 +17,8 @@ export type SpawnInput = {
   tier: Tier;
   budgetUsd: number;
   ladderStep?: number;
-  /** Omitted means "inherit every tool"; `[]` means a pure-text role. */
-  tools?: string[];
+  /** Auto-approve list plus the deny list that actually restricts. */
+  tools?: ToolPolicy;
   resume?: string;
 };
 
@@ -67,7 +68,8 @@ export async function spawn(input: SpawnInput, policy: Policy, eventsFile: strin
         // The SDK enforces the per-task budget; we do not have to police it.
         maxBudgetUsd: input.budgetUsd,
         systemPrompt: input.systemPrompt,
-        ...(input.tools ? { allowedTools: input.tools } : {}),
+        ...(input.tools?.allow ? { allowedTools: input.tools.allow } : {}),
+        ...(input.tools?.deny.length ? { disallowedTools: input.tools.deny } : {}),
         // The target repo must not configure our agents: a repo's own
         // .claude/settings.json could otherwise widen permissions.
         settingSources: [],

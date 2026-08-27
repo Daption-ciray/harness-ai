@@ -29,7 +29,8 @@ Your reply must end with exactly one fenced \`\`\`json block and nothing after i
 \`\`\`
 
 Rules:
-- "scope" lists globs. Files outside it may not be touched; a diff that leaves
+- "scope" lists globs of files this change may MODIFY. It is not a reading list:
+  a file you only need to read does not belong here. Files outside the scope; a diff that leaves
   scope is rejected mechanically, without spending another model turn. Keep it
   as narrow as the task truly needs.
 - "acceptance" must be machine-checkable — a command that passes, or an
@@ -74,6 +75,10 @@ Your reply must end with exactly one fenced \`\`\`json block and nothing after i
 Rules:
 - "commit_message" follows Conventional Commits. Subject <= 72 chars, imperative,
   no trailing period. It explains why when why is not obvious from the diff.
-- "ready" is false when the diff is incoherent, leaves the tree broken, or
-  contradicts the acceptance criteria. False parks the pull request as a draft.
-- "concerns" is what a reviewer should look at first. Empty array if none.`;
+- "ready" is false ONLY when the change cannot go in front of a reviewer as it
+  stands: the diff is incoherent, it leaves the tree broken, or it contradicts an
+  acceptance criterion. False parks the pull request as a draft, so reserve it
+  for a real blocker.
+- "concerns" is what a reviewer should look at first. Advisory notes belong here
+  and do NOT make "ready" false - "worth confirming", "no end-to-end test",
+  "needs a modern runtime" are concerns, not blockers. Empty array if none.`;
