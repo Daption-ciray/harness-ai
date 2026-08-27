@@ -5,6 +5,7 @@ import { test } from "node:test";
 import { emit, isType, readAll, readTrace } from "../src/events.ts";
 import { budgetWindowStart, isAlive, readState, writeState } from "../src/daemon.ts";
 import { describe } from "../src/cli/format.ts";
+import { costBasis, costLabel } from "../src/billing.ts";
 import { scratch } from "./helpers.ts";
 
 test("events round-trip through JSONL with their fields intact", () => {
@@ -95,4 +96,14 @@ test("resuming starts a fresh budget window, so the control the human used works
     { ts: hoursAgo(48), trace_id: "daemon", type: "resumed", reason: "manual" },
   ], now);
   assert.equal(staleResume, rolling, "a resume older than the window does not widen it");
+});
+
+test("cost is reported as a charge only when there is something to charge", () => {
+  // With a subscription, `total_cost_usd` is a notional equivalent and nothing
+  // is drawn from a balance. Calling it money spent would be false.
+  assert.equal(costBasis({}), "subscription");
+  assert.equal(costBasis({ ANTHROPIC_API_KEY: "sk-x" }), "billed");
+  assert.equal(costBasis({ ANTHROPIC_AUTH_TOKEN: "tok" }), "billed");
+  assert.match(costLabel("subscription"), /not a balance/);
+  assert.match(costLabel("billed"), /billed/);
 });

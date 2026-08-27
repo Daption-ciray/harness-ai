@@ -142,7 +142,7 @@ test("a builder that reaches for git is denied, and the denial is in the trace",
   assert.match((denied[0] as { reason: string }).reason, /may not run git/);
 });
 
-test("a file outside the declared scope is reported and never staged", async () => {
+test("a scope violation is surfaced, never silently amputated from the change", async () => {
   const h = harness([
     { role: "planner", text: fencedJson(PLAN) },
     {
@@ -159,12 +159,39 @@ test("a file outside the declared scope is reported and never staged", async () 
   ]);
   const task = await h.runToEnd();
 
+  // Trimming the out-of-scope file looked like enforcement and was worse than
+  // none: the first unattended run had the planner omit the test directory from
+  // scope, the builder wrote tests as instructed, and they were dropped —
+  // yielding a pull request with the feature and none of its tests. What a
+  // person reviews must be what was actually written.
   const committed = run(task.worktree as string, "show", "--name-only", "--format=", "HEAD").split("\n");
-  assert.ok(!committed.includes("README.md"), "the out-of-scope file is left out of the commit");
   assert.ok(committed.includes("src/greet.js"));
-  assert.equal(h.forge.prs[0].isDraft, true, "a scope violation parks the pull request");
+  assert.ok(committed.includes("README.md"), "the whole change is committed, partial commits are a lie");
+
+  assert.equal(h.forge.prs[0].isDraft, true, "and the violation still parks the pull request");
   assert.match(h.forge.prs[0].body, /outside declared scope: README\.md/);
   assert.deepEqual(h.forge.prs[0].labels, ["harness", "blocked:devops"]);
+});
+
+test("the tests a builder writes are not lost to a scope the planner drew too tight", async () => {
+  const h = harness([
+    { role: "planner", text: fencedJson({ ...PLAN, scope: ["src/**"] }) },
+    {
+      role: "builder",
+      act: (cwd) => {
+        writeGreet(cwd);
+        writeFileSync(join(cwd, "test/greet.extra.test.js"), "// covers the new behaviour\n");
+      },
+    },
+    { role: "adversary", text: fencedJson(PASS) },
+    { role: "review", text: fencedJson(PASS) },
+    { role: "scribe", text: fencedJson(SCRIBE_ENTRY) },
+    { role: "devops", text: fencedJson(DEVOPS_OK) },
+  ]);
+  const task = await h.runToEnd();
+  const committed = run(task.worktree as string, "show", "--name-only", "--format=", "HEAD").split("\n");
+  assert.ok(committed.includes("test/greet.extra.test.js"),
+    "a feature reaching review without its tests is the worst of both outcomes");
 });
 
 test("a planner that cannot write acceptance criteria asks rather than guessing", async () => {

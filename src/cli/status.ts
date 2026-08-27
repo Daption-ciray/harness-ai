@@ -6,6 +6,7 @@ import { resolvePaths } from "../paths.ts";
 import { loadPolicy } from "../policy.ts";
 import { listTasks, spendSince } from "../projection.ts";
 import { ago, describe, money } from "./format.ts";
+import { costBasis, costLabel } from "../billing.ts";
 
 function row(label: string, value: string): string {
   return `${label.padEnd(10)} ${value}`;
@@ -34,7 +35,7 @@ export function status(cwd = process.cwd(), limit = 8): string {
     const p = loadPolicy(paths.policyFile);
     dailyLimit = p.budget.per_day_usd;
     lines.push(row("policy", `7 roles · merge.auto ${p.merge.auto ? "ON" : "off"} · ` +
-      `budget ${money(p.budget.per_task_usd)}/task ${money(p.budget.per_day_usd)}/day`));
+      `cap ${money(p.budget.per_task_usd)}/task ${money(p.budget.per_day_usd)}/day`));
     lines.push(row("runtime", `sandbox ${p.runtime.sandbox} · tick ${p.runtime.tick_seconds}s · ` +
       `max ${p.runtime.max_concurrent_builders} builders`));
   } catch (e) {
@@ -49,8 +50,10 @@ export function status(cwd = process.cwd(), limit = 8): string {
     return acc;
   }, {});
 
-  lines.push(row("spend", `${money(spentToday)} in the last 24h` +
-    (dailyLimit ? ` of ${money(dailyLimit)} (${Math.round((spentToday / dailyLimit) * 100)}%)` : "")));
+  const basis = costBasis();
+  lines.push(row("usage", `~${money(spentToday)} in the last 24h` +
+    (dailyLimit ? ` of a ${money(dailyLimit)} cap (${Math.round((spentToday / dailyLimit) * 100)}%)` : "")));
+  lines.push(row("", `  ${costLabel(basis)}`));
   lines.push(row("tasks", tasks.length
     ? Object.entries(byState).map(([s, n]) => `${n} ${s}`).join(" · ")
     : "none"));

@@ -66,3 +66,14 @@ test("an additive section keeps older policy files loading", () => {
   assert.equal(policy.memory.context_budget_chars, 8000);
   assert.equal(policy.memory.pitfall_threshold, 3);
 });
+
+test("the planner is told that scope must cover where tests live", async () => {
+  // The builder is instructed to write tests. A planner that scopes only source
+  // files describes a change that cannot land whole.
+  const { PLANNER, BUILDER } = await import("../src/roles/prompts.ts");
+  // Whitespace-normalised: the assertion is about what the prompt says, not
+  // about where the paragraph happens to wrap.
+  const flat = (text: string) => text.replace(/\s+/g, " ");
+  assert.match(flat(BUILDER), /Write the unit tests for your own change/);
+  assert.match(flat(PLANNER), /MUST include wherever the tests for this change will live/);
+});

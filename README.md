@@ -62,6 +62,20 @@ PreToolUse screen with a `canUseTool` backstop; only `scribe` will write memory.
 An advisory lock (`src/lock.ts`) keeps a CLI invocation and a daemon tick from
 advancing the same task into two worktrees and two pull requests.
 
+## What the cost figures mean
+
+The SDK bundles the Claude Code binary and inherits whatever credentials Claude
+Code has. With `ANTHROPIC_API_KEY` set, `total_cost_usd` is a real charge. With a
+subscription — credentials in the OS keychain, no key in the environment — it is
+a **notional equivalent**: nothing is drawn from a balance, and calling it money
+spent would be false. `harness status` says which basis applies.
+
+The budget rails govern the same number either way, so they still stop the
+daemon. What changes is what they protect. Under a subscription the harness eats
+the same allowance as your own interactive sessions, so exhausting it does not
+produce a bill — it stops you working. The daily cap matters more under a
+subscription, not less.
+
 ## Requirements
 
 - Node >= 22.18 (TypeScript runs directly via type stripping — no build step)

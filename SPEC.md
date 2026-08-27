@@ -394,7 +394,7 @@ veto:
   adversary: { type: soft, max_rounds: 3 }
   devops:    { type: soft, max_rounds: 3 }
 
-budget:
+budget:                        # bkz. "Maliyet rakamları ne ölçüyor"
   per_task_usd: 2.00
   per_day_usd: 25.00
   on_exceed: pause             # pause | notify
@@ -440,6 +440,24 @@ permissions:
 ```
 
 ---
+
+## 10b. Maliyet rakamları ne ölçüyor
+
+Agent SDK, Claude Code binary'sini paketliyor ve **onun kimlik doğrulamasını
+miras alıyor.**
+
+- `ANTHROPIC_API_KEY` set ise → `total_cost_usd` **gerçek ücret**
+- Abonelik (kimlik bilgisi OS keychain'de, ortamda anahtar yok) → **denk tutar
+  tahmini.** Bakiyeden bir şey düşmüyor; buna "harcanan para" demek yanlış olur
+
+Raylar her iki durumda da aynı sayıyı yönettiği için **durdurucu olarak çalışıyor.**
+Değişen şey neyi koruduğu:
+
+Abonelikte harness, kişinin kendi interaktif oturumlarıyla **aynı kotayı** yiyor.
+Kota tükenirse fatura gelmiyor — **kişinin kendi çalışması duruyor.** Küçük bir
+faturadan kötü. Yani günlük ray abonelikte daha az değil, **daha çok** önemli.
+
+`harness status` hangi temelin geçerli olduğunu söylüyor.
 
 ## 11a. İnsan niyeti
 

@@ -30,7 +30,10 @@ Your reply must end with exactly one fenced \`\`\`json block and nothing after i
 
 Rules:
 - "scope" lists globs of files this change may MODIFY. It is not a reading list:
-  a file you only need to read does not belong here. Files outside the scope; a diff that leaves
+  a file you only need to read does not belong here. It MUST include wherever the
+  tests for this change will live — the builder writes tests as part of the
+  change, and a scope that omits them describes a change that cannot land.
+  Files outside the scope; a diff that leaves
   scope is rejected mechanically, without spending another model turn. Keep it
   as narrow as the task truly needs.
 - "acceptance" must be machine-checkable — a command that passes, or an

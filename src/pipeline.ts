@@ -447,12 +447,17 @@ async function integrate(task: Task, ctx: Ctx): Promise<void> {
     return climb(ctx, task, task.ladder_step, span.ok ? "devops returned no commit message" : spanFailure(span));
   }
 
-  // Out-of-scope files are never staged; devops has already reported them. The
-  // decision entry is the exception: it is the harness's own writing, and it has
-  // to travel in the same commit as the code it explains.
-  const decisionPath = relative(ctx.paths.repoRoot, ctx.paths.decisionsFile);
-  const inScope = pending.filter((f) => !violations.includes(f) || f === decisionPath);
-  const sha = commitAll(dir, out.commit_message, inScope);
+  // Everything the builder produced is committed, including what fell outside
+  // the declared scope.
+  //
+  // Trimming the out-of-scope files looked like enforcement and was worse than
+  // no enforcement: on the first unattended run the planner left the test
+  // directory out of scope, the builder wrote tests as it is told to, and they
+  // were dropped — producing a pull request with the feature and none of its
+  // tests. A partial commit is a lie about what was written. Scope creep is
+  // surfaced instead: reported as a concern, and the pull request stays a draft
+  // so a person decides whether the extra file belongs.
+  const sha = commitAll(dir, out.commit_message, pending);
   push(dir, branch);
 
   const stat = diffStat(dir, base);
