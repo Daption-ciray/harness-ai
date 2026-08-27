@@ -1,121 +1,92 @@
-import { query } from "@anthropic-ai/claude-agent-sdk";
 import { randomUUID } from "node:crypto";
-import { append } from "./events.ts";
-import { canUseTool, preToolUseHook, type Denial, type GuardContext } from "./permissions.ts";
-import type { Policy, Role } from "./policy.ts";
+import type { AgentOutcome, AgentRunner, Denial } from "./agent-runner.ts";
+import { emit } from "./events.ts";
+import { screenCommand } from "./permissions.ts";
+import type { Effort, Policy, Role } from "./policy.ts";
 import type { ToolPolicy } from "./roles/tools.ts";
 
-export type Tier = { model: string; effort: "low" | "medium" | "high" | "xhigh" | "max"; maxTurns: number };
+export type Tier = { model: string; effort: Effort; maxTurns: number };
 
-export type SpawnInput = {
+export type SpanInput = {
   role: Role;
   traceId: string;
-  parentSpan?: string;
   systemPrompt: string;
   prompt: string;
   cwd: string;
   tier: Tier;
+  ladderStep: number;
   budgetUsd: number;
-  ladderStep?: number;
-  /** Auto-approve list plus the deny list that actually restricts. */
-  tools?: ToolPolicy;
+  tools: ToolPolicy;
   resume?: string;
 };
 
-export type SpanResult = {
-  ok: boolean;
-  spanId: string;
-  text: string;
-  sessionId: string;
-  /** From `total_cost_usd` — it counts subagents. `usage` does not. */
-  costUsd: number;
-  modelUsage: Record<string, unknown>;
-  numTurns: number;
-  subtype: string;
-  denials: Denial[];
-  errors: string[];
-};
+export type SpanResult = AgentOutcome & { spanId: string; denials: Denial[] };
+
+export type SpanDeps = { policy: Policy; eventsFile: string; runner: AgentRunner };
 
 export function newSpanId(): string {
   return randomUUID().slice(0, 8);
 }
 
-export async function spawn(input: SpawnInput, policy: Policy, eventsFile: string): Promise<SpanResult> {
+/**
+ * One agent run, bracketed by its own events. `span_start` is written before the
+ * model is reached, so a process killed mid-run leaves a span that the log shows
+ * as opened and never closed — which is precisely how a reader should see it.
+ */
+export async function runSpan(input: SpanInput, deps: SpanDeps): Promise<SpanResult> {
   const spanId = newSpanId();
   const denials: Denial[] = [];
-  const guard: GuardContext = { role: input.role, traceId: input.traceId, spanId, eventsFile, policy };
-
-  // Written before the run, so a crash mid-span is visible on replay.
-  append(eventsFile, {
-    trace_id: input.traceId, span_id: spanId, parent_span: input.parentSpan,
-    type: "span_start", role: input.role,
-    model: input.tier.model, effort: input.tier.effort, ladder_step: input.ladderStep,
-  });
-
-  const result: SpanResult = {
-    ok: false, spanId, text: "", sessionId: "", costUsd: 0,
-    modelUsage: {}, numTurns: 0, subtype: "no_result", denials, errors: [],
+  const common = {
+    span_id: spanId, role: input.role, model: input.tier.model,
+    effort: input.tier.effort, ladder_step: input.ladderStep,
   };
 
-  try {
-    const q = query({
-      prompt: input.prompt,
-      options: {
-        cwd: input.cwd,
-        model: input.tier.model,
-        effort: input.tier.effort,
-        maxTurns: input.tier.maxTurns,
-        // The SDK enforces the per-task budget; we do not have to police it.
-        maxBudgetUsd: input.budgetUsd,
-        systemPrompt: input.systemPrompt,
-        ...(input.tools?.allow ? { allowedTools: input.tools.allow } : {}),
-        ...(input.tools?.deny.length ? { disallowedTools: input.tools.deny } : {}),
-        // The target repo must not configure our agents: a repo's own
-        // .claude/settings.json could otherwise widen permissions.
-        settingSources: [],
-        permissionMode: "default",
-        hooks: { PreToolUse: [preToolUseHook(guard, denials)] },
-        canUseTool: canUseTool(guard, denials),
-        ...(input.resume ? { resume: input.resume } : {}),
-      },
-    });
+  emit(deps.eventsFile, input.traceId, "span_start", common);
 
-    for await (const message of q) {
-      if (message.type !== "result") continue;
-      result.sessionId = message.session_id;
-      result.costUsd = message.total_cost_usd;
-      result.modelUsage = message.modelUsage as Record<string, unknown>;
-      result.numTurns = message.num_turns;
-      result.subtype = message.subtype;
-      if (message.subtype === "success") {
-        result.ok = true;
-        result.text = message.result;
-      } else {
-        result.errors = message.errors ?? [];
-      }
-    }
-  } catch (e) {
-    result.subtype = "spawn_threw";
-    result.errors = [(e as Error).message];
-  }
-
-  append(eventsFile, {
-    trace_id: input.traceId, span_id: spanId, parent_span: input.parentSpan,
-    type: "span_end", role: input.role,
-    model: input.tier.model, effort: input.tier.effort, ladder_step: input.ladderStep,
-    cost_usd: result.costUsd, session_id: result.sessionId,
-    outcome: result.ok ? "ok" : result.subtype,
-    reason: result.errors[0],
-    payload: { num_turns: result.numTurns, denials: denials.length, modelUsage: result.modelUsage },
+  const outcome = await deps.runner({
+    role: input.role,
+    systemPrompt: input.systemPrompt,
+    prompt: input.prompt,
+    cwd: input.cwd,
+    model: input.tier.model,
+    effort: input.tier.effort,
+    maxTurns: input.tier.maxTurns,
+    budgetUsd: input.budgetUsd,
+    tools: input.tools,
+    resume: input.resume,
+    screenCommand: (command) => screenCommand(deps.policy, input.role, command),
+    onDenial: (denial) => {
+      denials.push(denial);
+      // Recorded, so a leak in the single-writer rule shows up in the trace
+      // instead of passing silently.
+      emit(deps.eventsFile, input.traceId, "tool_denied", {
+        span_id: spanId, role: input.role,
+        tool: denial.tool, reason: denial.reason, command: denial.command,
+      });
+    },
   });
 
-  return result;
+  emit(deps.eventsFile, input.traceId, "span_end", {
+    ...common,
+    cost_usd: outcome.costUsd,
+    session_id: outcome.sessionId,
+    ok: outcome.ok,
+    subtype: outcome.subtype,
+    num_turns: outcome.numTurns,
+    denials: denials.length,
+    error: outcome.errors[0] ?? null,
+    model_usage: outcome.modelUsage,
+  });
+
+  return { ...outcome, spanId, denials };
 }
 
 /** Pulls the first fenced JSON block out of an agent's final text. */
 export function extractJson<T>(text: string): T | null {
   const fenced = text.match(/```(?:json)?\s*\n([\s\S]*?)```/);
-  const candidate = fenced ? fenced[1] : text.slice(text.indexOf("{"), text.lastIndexOf("}") + 1);
+  const start = text.indexOf("{");
+  const end = text.lastIndexOf("}");
+  const candidate = fenced ? fenced[1] : (start >= 0 && end > start ? text.slice(start, end + 1) : "");
   try {
     return JSON.parse(candidate) as T;
   } catch {

@@ -31,7 +31,7 @@ export function init(cwd = process.cwd(), force = false): string[] {
     out.push(`wrote   ${paths.decisionsFile}`);
   }
 
-  for (const dir of [paths.sidecar, paths.tasksDir, paths.worktreesDir]) {
+  for (const dir of [paths.sidecar, paths.worktreesDir]) {
     mkdirSync(dir, { recursive: true });
   }
   out.push(`sidecar ${paths.sidecar}`);

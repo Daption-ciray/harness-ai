@@ -3,12 +3,12 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { parsePolicy, ROLES } from "../src/policy.ts";
-import { bashCommandDenial } from "../src/permissions.ts";
+import { screenCommand } from "../src/permissions.ts";
 import { ROLE_TOOLS } from "../src/roles/tools.ts";
 
 const policy = parsePolicy(readFileSync(join(import.meta.dirname, "../src/default-policy.yaml"), "utf8"));
 const deny = (role: string, command: string) =>
-  bashCommandDenial({ role, policy } as Parameters<typeof bashCommandDenial>[0], command);
+  screenCommand(policy, role as Parameters<typeof screenCommand>[1], command);
 
 test("devops is the only role allowed to run git or gh", () => {
   for (const role of ROLES) {

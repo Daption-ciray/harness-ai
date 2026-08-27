@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { parseArgs } from "node:util";
 import { setPaused, start, stop } from "../src/daemon.ts";
-import { backlogAdd, runOnce, tasks } from "../src/cli/backlog.ts";
+import { backlogAdd, cancel, runOnce, tasks } from "../src/cli/backlog.ts";
 import { init } from "../src/cli/init.ts";
 import { status } from "../src/cli/status.ts";
 
@@ -15,6 +15,7 @@ const USAGE = `harness — multi-agent development harness
   harness backlog add "<text>"  queue a task (origin: trusted)
   harness tasks                 list every task and its state
   harness run [<id>]            advance one task by one stage, in the foreground
+  harness cancel <id> "<why>"   retire a task; recorded, never deleted
 `;
 
 const { positionals, values } = parseArgs({
@@ -48,6 +49,9 @@ try {
     console.log(tasks(cwd));
   } else if (cmd === "run") {
     console.log(await runOnce(cwd, rest[0]));
+  } else if (cmd === "cancel") {
+    if (!rest[0]) throw new Error('cancel needs a task id: harness cancel bk-1 "why"');
+    console.log(cancel(cwd, rest[0], rest.slice(1).join(" ") || "no reason given"));
   } else if (cmd === "backlog" && rest[0] === "add") {
     console.log(backlogAdd(cwd, rest.slice(1).join(" "), values.untrusted ? "untrusted" : "trusted"));
   } else {

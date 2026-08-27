@@ -1,10 +1,14 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
-import { append } from "./events.ts";
+import { DAEMON_TRACE, emit, readAll } from "./events.ts";
+import { sdkRunner, type AgentRunner } from "./agent-runner.ts";
+import { ghForge, type Forge } from "./github.ts";
+import { LockBusy, withLock } from "./lock.ts";
+import { listTasks } from "./projection.ts";
+import { isActiveState } from "./domain.ts";
 import { loadPolicy, type Policy } from "./policy.ts";
 import { originUrl, resolvePaths, type Paths } from "./paths.ts";
 import { advance } from "./pipeline.ts";
-import { isActive, listTasks } from "./task.ts";
 
 export type DaemonStatus = "running" | "paused" | "stopped";
 
@@ -58,7 +62,7 @@ export function requireOrigin(paths: Paths): string {
   return url;
 }
 
-export type Tick = { policy: Policy; paths: Paths; state: State; count: number };
+export type Tick = { policy: Policy; paths: Paths; state: State; count: number; runner: AgentRunner; forge: Forge };
 
 /**
  * One scheduler pass: advance a single task by one stage. Phase 1 is
@@ -69,9 +73,10 @@ export type Tick = { policy: Policy; paths: Paths; state: State; count: number }
  * daemon should not grow its own log.
  */
 export async function tick(ctx: Tick): Promise<void> {
-  const tasks = listTasks(ctx.paths);
+  const events = readAll(ctx.paths.eventsFile);
+  const tasks = listTasks(events);
   const pendingHuman = tasks.filter((t) => t.state === "escalated").length;
-  const active = tasks.filter(isActive);
+  const active = tasks.filter((t) => isActiveState(t.state));
 
   // WIP limit: a full review queue stops NEW work, but work already in flight
   // still finishes - otherwise tasks strand halfway with an open worktree.
@@ -81,7 +86,7 @@ export async function tick(ctx: Tick): Promise<void> {
 
   const next = pool[0];
   if (!next) return;
-  await advance(next, { policy: ctx.policy, paths: ctx.paths });
+  await advance(next, { policy: ctx.policy, paths: ctx.paths, runner: ctx.runner, forge: ctx.forge });
 }
 
 export async function start(cwd = process.cwd()): Promise<void> {
@@ -94,7 +99,7 @@ export async function start(cwd = process.cwd()): Promise<void> {
   }
 
   let policy = loadPolicy(paths.policyFile);
-  for (const dir of [paths.sidecar, paths.tasksDir, paths.worktreesDir]) {
+  for (const dir of [paths.sidecar, paths.worktreesDir]) {
     mkdirSync(dir, { recursive: true });
   }
 
@@ -104,9 +109,8 @@ export async function start(cwd = process.cwd()): Promise<void> {
     started_at: new Date().toISOString(),
     tick_count: 0,
   });
-  append(paths.eventsFile, {
-    trace_id: "daemon", type: "daemon_start",
-    payload: { pid: process.pid, slug: paths.slug, tick_seconds: policy.runtime.tick_seconds },
+  emit(paths.eventsFile, DAEMON_TRACE, "daemon_start", {
+    pid: process.pid, slug: paths.slug, tick_seconds: policy.runtime.tick_seconds,
   });
   console.log(`harness running · ${paths.slug} · tick ${policy.runtime.tick_seconds}s · pid ${process.pid}`);
 
@@ -123,14 +127,18 @@ export async function start(cwd = process.cwd()): Promise<void> {
     writeState(paths.stateFile, { last_tick: new Date().toISOString(), tick_count: count });
     if (state.status === "paused" || busy) return;
     busy = true;
-    void tick({ policy, paths, state, count })
-      .catch((e) => console.error(`tick failed: ${(e as Error).message}`))
+    // The lock, not `busy`, is what keeps a CLI invocation out; `busy` only
+    // stops this daemon from overlapping itself when a stage outlives a tick.
+    void withLock(paths.lockFile, "harness daemon", () => tick({ policy, paths, state, count, runner: sdkRunner, forge: ghForge }))
+      .catch((e) => {
+        if (!(e instanceof LockBusy)) console.error(`tick failed: ${(e as Error).message}`);
+      })
       .finally(() => { busy = false; });
   }, policy.runtime.tick_seconds * 1000);
 
   const shutdown = (signal: string) => {
     clearInterval(timer);
-    append(paths.eventsFile, { trace_id: "daemon", type: "daemon_stop", reason: signal });
+    emit(paths.eventsFile, DAEMON_TRACE, "daemon_stop", { signal });
     writeState(paths.stateFile, { status: "stopped", pid: null });
     console.log(`\nharness stopped (${signal})`);
     process.exit(0);
@@ -158,6 +166,6 @@ export function setPaused(cwd: string, paused: boolean): string {
   if (!isAlive(state)) return "daemon is not running";
   if ((state.status === "paused") === paused) return `already ${paused ? "paused" : "running"}`;
   writeState(paths.stateFile, { status: paused ? "paused" : "running" });
-  append(paths.eventsFile, { trace_id: "daemon", type: paused ? "paused" : "resumed" });
+  emit(paths.eventsFile, DAEMON_TRACE, paused ? "paused" : "resumed", {});
   return paused ? "paused - sensors and dispatch idle" : "resumed";
 }

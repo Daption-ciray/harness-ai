@@ -9,7 +9,9 @@ export type Role = (typeof ROLES)[number];
 
 export const DEFAULT_OWNER: Role = "planner";
 
-const Effort = z.enum(["low", "medium", "high", "xhigh", "max"]);
+export const EFFORTS = ["low", "medium", "high", "xhigh", "max"] as const;
+export type Effort = (typeof EFFORTS)[number];
+const Effort = z.enum(EFFORTS);
 const TaskClass = z.enum(["trivial", "routine", "risky"]);
 const Origin = z.enum(["trusted", "untrusted"]);
 

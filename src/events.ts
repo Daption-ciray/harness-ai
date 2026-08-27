@@ -1,60 +1,110 @@
-import { appendFileSync, mkdirSync, readFileSync, existsSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname } from "node:path";
-
-export const EVENT_TYPES = [
-  "daemon_start", "daemon_stop", "paused", "resumed",
-  "backlog_add", "task_planned",
-  "span_start", "span_end",
-  "tool_denied",
-  "veto", "preempt", "lease_acquired", "lease_released",
-  "worktree_open", "worktree_close",
-  "pr_opened", "pr_ready", "ci_result", "merge",
-  "escalate", "budget_pause", "flag", "revert",
-] as const;
-
-export type EventType = (typeof EVENT_TYPES)[number];
-
-export type HarnessEvent = {
-  ts: string;
-  /** Backlog item id. Maps one-to-one onto a PR. */
-  trace_id: string;
-  /** One agent run. */
-  span_id?: string;
-  parent_span?: string;
-  type: EventType;
-  role?: string;
-  task_id?: string;
-  model?: string;
-  effort?: string;
-  ladder_step?: number;
-  cost_usd?: number;
-  /** Agent SDK session id - the door to the raw transcript. */
-  session_id?: string;
-  outcome?: string;
-  reason?: string;
-  payload?: unknown;
-};
+import type { Effort, Role } from "./policy.ts";
+import type { Origin, TaskClass } from "./domain.ts";
 
 /**
- * Append durably and synchronously. Every state transition is written BEFORE
- * the action it describes, so a crashed daemon can replay the log on restart.
- * ponytail: plain JSONL, no rotation. Add rotation when a log actually gets big.
+ * The event log is the ONLY source of truth for task state. Everything a reader
+ * needs — `harness status`, `harness trace`, the daemon's next decision — is a
+ * fold over this log (see projection.ts). There is deliberately no second
+ * mutable store to drift out of step with it.
+ *
+ * Each shape carries everything the fold needs, so the fold never has to infer
+ * a transition from the absence of something.
  */
-export function append(file: string, event: Omit<HarnessEvent, "ts"> & { ts?: string }): HarnessEvent {
-  const full: HarnessEvent = { ts: new Date().toISOString(), ...event };
+export type EventShapes = {
+  daemon_start: { pid: number; slug: string; tick_seconds: number };
+  daemon_stop: { signal: string };
+  paused: Record<string, never>;
+  resumed: Record<string, never>;
+
+  backlog_add: { text: string; origin: Origin; source: string };
+  task_planned: {
+    role: Role; task_class: TaskClass; scope: string[];
+    acceptance: string[]; steps: string[]; ladder_step: number;
+  };
+  ladder_advanced: { from: number; to: number; reason: string };
+  build_done: { files: string[] };
+  worktree_open: { branch: string; dir: string; setup_artifacts: string[]; setup_error: string | null };
+  worktree_close: { dir: string };
+
+  span_start: { span_id: string; role: Role; model: string; effort: Effort; ladder_step: number };
+  span_end: {
+    span_id: string; role: Role; model: string; effort: Effort; ladder_step: number;
+    cost_usd: number; session_id: string; ok: boolean; subtype: string;
+    num_turns: number; denials: number; error: string | null;
+    model_usage: Record<string, unknown>;
+  };
+  tool_denied: { span_id: string; role: Role; tool: string; reason: string; command: string };
+
+  veto: { role: Role; kind: "hard" | "soft"; reason: string };
+  preempt: { from: Role; to: Role; reason: string };
+  lease_acquired: { holder: Role; reason: string; ttl_seconds: number };
+  lease_released: { holder: Role; reason: string };
+
+  pr_opened: { number: number; url: string; draft: boolean; sha: string | null; files: number; lines: number };
+  ci_result: { ok: boolean; summary: string };
+  merge: { sha: string; by: "human" | "harness" };
+  escalate: { reason: string };
+  task_failed: { reason: string };
+  budget_pause: { spent_usd: number; limit_usd: number; window: "task" | "day" };
+  flag: { kind: string; detail: string };
+  revert: { sha: string; reason: string };
+};
+
+export type EventType = keyof EventShapes;
+
+export type HarnessEvent = {
+  [K in EventType]: { ts: string; trace_id: string; type: K } & EventShapes[K];
+}[EventType];
+
+/** The trace id used for events that belong to the daemon rather than a task. */
+export const DAEMON_TRACE = "daemon";
+
+/**
+ * Synchronous and durable, and written BEFORE the action it describes. A crash
+ * between the write and the action replays as "attempted"; a crash after
+ * replays as "done". Both are recoverable — a missing event is not.
+ */
+export function emit<K extends EventType>(
+  file: string,
+  trace_id: string,
+  type: K,
+  fields: EventShapes[K],
+): HarnessEvent {
+  const event = { ts: new Date().toISOString(), trace_id, type, ...fields } as HarnessEvent;
   mkdirSync(dirname(file), { recursive: true });
-  appendFileSync(file, JSON.stringify(full) + "\n", "utf8");
-  return full;
+  appendFileSync(file, JSON.stringify(event) + "\n", "utf8");
+  return event;
 }
 
+/**
+ * A corrupt line is skipped rather than fatal: a daemon killed mid-write can
+ * leave a partial last line, and refusing to start because of it would turn a
+ * recoverable crash into an unrecoverable one.
+ */
 export function readAll(file: string): HarnessEvent[] {
   if (!existsSync(file)) return [];
-  return readFileSync(file, "utf8")
-    .split("\n")
-    .filter((l) => l.trim() !== "")
-    .map((l) => JSON.parse(l) as HarnessEvent);
+  const out: HarnessEvent[] = [];
+  for (const line of readFileSync(file, "utf8").split("\n")) {
+    if (line.trim() === "") continue;
+    try {
+      out.push(JSON.parse(line) as HarnessEvent);
+    } catch {
+      // partial write at the tail of a killed process
+    }
+  }
+  return out;
 }
 
 export function readTrace(file: string, traceId: string): HarnessEvent[] {
   return readAll(file).filter((e) => e.trace_id === traceId);
+}
+
+/** Narrows a heterogeneous log to one event type without a cast at the call site. */
+export function isType<K extends EventType>(
+  event: HarnessEvent,
+  type: K,
+): event is Extract<HarnessEvent, { type: K }> {
+  return event.type === type;
 }

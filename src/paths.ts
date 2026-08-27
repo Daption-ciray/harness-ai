@@ -13,11 +13,10 @@ export type Paths = {
   sidecar: string;
   eventsFile: string;
   stateFile: string;
-  backlogFile: string;
   leasesFile: string;
   contextFile: string;
   repoProfileFile: string;
-  tasksDir: string;
+  lockFile: string;
   worktreesDir: string;
 };
 
@@ -54,11 +53,19 @@ export function originUrl(root: string): string | null {
   }
 }
 
+/**
+ * Where the sidecar lives. `HARNESS_HOME` overrides it, which keeps tests off
+ * the real home directory and lets one machine run isolated profiles.
+ */
+export function sidecarRoot(): string {
+  return process.env.HARNESS_HOME || join(homedir(), ".harness");
+}
+
 export function resolvePaths(cwd = process.cwd()): Paths {
   const root = repoRoot(cwd);
   const slug = repoSlug(root);
   const harnessDir = join(root, ".harness");
-  const sidecar = join(homedir(), ".harness", slug);
+  const sidecar = join(sidecarRoot(), slug);
   return {
     repoRoot: root,
     slug,
@@ -68,11 +75,10 @@ export function resolvePaths(cwd = process.cwd()): Paths {
     sidecar,
     eventsFile: join(sidecar, "events.jsonl"),
     stateFile: join(sidecar, "state.json"),
-    backlogFile: join(sidecar, "backlog.jsonl"),
     leasesFile: join(sidecar, "leases.json"),
     contextFile: join(sidecar, "context.md"),
     repoProfileFile: join(sidecar, "repo.md"),
-    tasksDir: join(sidecar, "tasks"),
+    lockFile: join(sidecar, "lock.json"),
     worktreesDir: join(sidecar, "worktrees"),
   };
 }
