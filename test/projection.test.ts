@@ -30,7 +30,7 @@ const happyPath = (): HarnessEvent[] => [
   }),
   ev("bk-1", "worktree_open", { branch: "harness/bk-1", dir: "/w/bk-1", setup_artifacts: ["node_modules"], setup_error: null }),
   ev("bk-1", "span_end", span("builder", 0.9)),
-  ev("bk-1", "build_done", { files: ["src/a.ts"] }),
+  ev("bk-1", "build_done", { files: ["src/a.ts"], revision: 1 }),
   ev("bk-1", "span_end", span("devops", 0.2)),
   ev("bk-1", "pr_opened", { number: 7, url: "https://x/7", draft: false, sha: "abc", files: 1, lines: 10 }),
   ev("bk-1", "escalate", { reason: "merge.auto is off" }),
@@ -51,7 +51,7 @@ test("state is a fold of the log, never stored", () => {
 
 test("truncating the log at any point yields the state that prefix describes", () => {
   const log = happyPath();
-  const expected = ["queued", "queued", "planned", "planned", "planned", "built", "built", "escalated", "escalated"];
+  const expected = ["queued", "queued", "planned", "planned", "planned", "verifying", "verifying", "escalated", "escalated"];
   for (let i = 0; i < log.length; i++) {
     assert.equal(projectOne(log.slice(0, i + 1), "bk-1")?.state, expected[i], `prefix of length ${i + 1}`);
   }
@@ -93,7 +93,7 @@ test("traces are isolated - a failure on one task leaves the other alone", () =>
 });
 
 test("an event for a trace that was never opened is ignored, not fatal", () => {
-  const orphan = [ev("bk-99", "build_done", { files: ["x"] })];
+  const orphan = [ev("bk-99", "build_done", { files: ["x"], revision: 1 })];
   assert.equal(project(orphan).size, 0);
 });
 
@@ -112,7 +112,7 @@ test("failed builder spans count rounds; successful ones clear the error", () =>
   // `build_done` and `task_planned` are what clear it, because they are the
   // events that mean the stage actually finished.
   assert.equal(t?.last_error, "boom");
-  const cleared = projectOne([...log, ev("bk-1", "build_done", { files: ["a"] })], "bk-1");
+  const cleared = projectOne([...log, ev("bk-1", "build_done", { files: ["a"], revision: 1 })], "bk-1");
   assert.equal(cleared?.last_error, null);
 });
 
@@ -120,7 +120,7 @@ test("apply is pure - the input task is never mutated", () => {
   const before = projectOne(happyPath().slice(0, 1), "bk-1");
   assert.ok(before);
   const snapshot = structuredClone(before);
-  apply(before, ev("bk-1", "build_done", { files: ["a"] }));
+  apply(before, ev("bk-1", "build_done", { files: ["a"], revision: 1 }));
   assert.deepEqual(before, snapshot);
 });
 
@@ -151,9 +151,9 @@ test("daily spend counts only spans inside the window", () => {
 test("a partial final line from a killed process is skipped, not fatal", () => {
   const file = join(scratch(), "events.jsonl");
   emit(file, "bk-1", "backlog_add", { text: "t", origin: "trusted", source: "human" });
-  emit(file, "bk-1", "build_done", { files: ["a"] });
+  emit(file, "bk-1", "build_done", { files: ["a"], revision: 1 });
   appendFileSync(file, '{"ts":"2026-01-01T00:00:00.000Z","trace_i');
   const events = readAll(file);
   assert.equal(events.length, 2);
-  assert.equal(projectOne(events, "bk-1")?.state, "built");
+  assert.equal(projectOne(events, "bk-1")?.state, "verifying");
 });

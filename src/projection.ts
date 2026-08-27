@@ -25,6 +25,8 @@ export type Task = {
   pr: { number: number; url: string; draft: boolean } | null;
   /** Failed builder attempts. */
   rounds: number;
+  /** Bumped by every build; verdicts are always about one revision. */
+  revision: number;
   ladder_step: number;
   cost_usd: number;
   spans: number;
@@ -39,7 +41,7 @@ function seed(id: string, ts: string, text: string, origin: Origin, source: stri
     state: "queued", task_class: "routine",
     scope: [], acceptance: [], steps: [],
     branch: null, worktree: null, setup_artifacts: [], pr: null,
-    rounds: 0, ladder_step: 0, cost_usd: 0, spans: 0, last_error: null,
+    rounds: 0, revision: 0, ladder_step: 0, cost_usd: 0, spans: 0, last_error: null,
     created_at: ts, updated_at: ts,
   };
 }
@@ -75,7 +77,19 @@ export function apply(task: Task, event: HarnessEvent): Task {
     case "worktree_close":
       return next({ worktree: null });
     case "build_done":
-      return next({ state: "built", last_error: null });
+      return next({ state: "verifying", revision: event.revision, last_error: null });
+    case "verified":
+      return next({ state: "integrating", last_error: null });
+    case "verdict":
+      return task; // trace history; the gate is computed, not stored
+    case "veto":
+      // A soft veto sends the work back to the builder. A hard veto quarantines
+      // it, and only a human or `security` releases that.
+      return event.kind === "soft"
+        ? next({ state: "planned", last_error: `${event.role}: ${event.reason}` })
+        : next({ state: "failed", last_error: `${event.role} (hard veto): ${event.reason}` });
+    case "stalled":
+      return next({ state: "failed", last_error: `${event.kind}: ${event.detail}` });
     case "span_end":
       return next({
         cost_usd: addCost(task.cost_usd, event.cost_usd),

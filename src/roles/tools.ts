@@ -17,6 +17,7 @@ export const ROLE_TOOLS: Record<Role, ToolPolicy> = {
   planner: { allow: READING, deny: [...MUTATING, ...RESEARCH, ...DELEGATION] },
   // The only role that writes code. git and gh are blocked by the PreToolUse guard.
   builder: { deny: [...RESEARCH, ...DELEGATION] },
+  // Writes and runs tests to prove a defect; never fixes the code.
   adversary: { deny: [...RESEARCH, ...DELEGATION] },
   // Pure judgement over material it is handed. No tools at all.
   review: { allow: [], deny: [...MUTATING, ...RESEARCH, ...READING, ...DELEGATION] },

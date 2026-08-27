@@ -9,10 +9,14 @@ import { emit, readAll, type HarnessEvent } from "./events.ts";
 import type { Paths } from "./paths.ts";
 import type { Policy } from "./policy.ts";
 import { projectOne, spendSince, type Task } from "./projection.ts";
-import { BUILDER, DEVOPS, PLANNER } from "./roles/prompts.ts";
+import { ADVERSARY, BUILDER, DEVOPS, PLANNER, REVIEW } from "./roles/prompts.ts";
 import { ROLE_TOOLS } from "./roles/tools.ts";
 import { extractJson, runSpan, type SpanResult } from "./spawn.ts";
 import { classify, ladderStartFor, resolveTier } from "./tier.ts";
+import { resolveLease } from "./lease.ts";
+import { concernsFor, currentRevision, detectStall, pendingVerifiers } from "./verify.ts";
+import type { Finding } from "./domain.ts";
+import type { Role } from "./policy.ts";
 
 export type Ctx = { policy: Policy; paths: Paths; runner: AgentRunner; forge: Forge };
 
@@ -111,6 +115,7 @@ async function build(task: Task, ctx: Ctx): Promise<void> {
   const current = projectOne(readAll(ctx.paths.eventsFile), task.id) ?? task;
   const artifacts = current.setup_artifacts;
 
+  const blockers = openBlockers(readAll(ctx.paths.eventsFile));
   const prompt = [
     `Backlog item ${task.id}:\n\n${wrap(task)}`,
     `\nScope — files outside this may not change:\n${task.scope.map((s) => `- ${s}`).join("\n")}`,
@@ -118,6 +123,11 @@ async function build(task: Task, ctx: Ctx): Promise<void> {
     task.steps.length ? `\nPlanned steps:\n${task.steps.map((s) => `- ${s}`).join("\n")}` : "",
     `\nTest command: ${ctx.policy.repo.test_cmd}`,
     task.last_error ? `\nThe previous attempt failed with: ${task.last_error}` : "",
+    blockers.length
+      ? `\nA verifier blocked the previous revision. Every one of these must be` +
+        ` resolved, and do not merely reword them away:\n` +
+        blockers.map((f) => `- ${f.file}${f.line ? `:${f.line}` : ""} — ${f.summary}`).join("\n")
+      : "",
   ].filter(Boolean).join("\n");
 
   const span = await runSpan({
@@ -132,7 +142,120 @@ async function build(task: Task, ctx: Ctx): Promise<void> {
   if (produced.length === 0) {
     return fail(ctx, current, "builder finished without changing anything");
   }
-  emit(ctx.paths.eventsFile, task.id, "build_done", { files: produced });
+  emit(ctx.paths.eventsFile, task.id, "build_done", {
+    files: produced, revision: currentRevision(readAll(ctx.paths.eventsFile)) + 1,
+  });
+}
+
+/** What each verifier is handed, and where it runs. */
+const VERIFIERS: Partial<Record<Role, { systemPrompt: string; inWorktree: boolean }>> = {
+  // The adversary runs in the worktree because writing a failing test is its
+  // strongest possible finding, and it cannot write one without the tree.
+  adversary: { systemPrompt: ADVERSARY, inWorktree: true },
+  review: { systemPrompt: REVIEW, inWorktree: false },
+};
+
+const AVAILABLE_VERIFIERS = Object.keys(VERIFIERS) as Role[];
+
+type VerifierOutput = { verdict?: string; note?: string; findings?: Finding[] };
+
+/** Blockers from the most recent veto, so the builder is told what to fix. */
+export function openBlockers(events: ReturnType<typeof readAll>): Finding[] {
+  const last = [...events].reverse().find((e) => e.type === "veto");
+  return last && last.type === "veto"
+    ? last.findings.filter((f) => f.severity === "blocker")
+    : [];
+}
+
+function branchDiff(dir: string, base: string, limit = 20000): string {
+  return [
+    git(["diff", "--stat", `${base}...HEAD`], dir),
+    git(["diff", `${base}...HEAD`], dir).slice(0, limit),
+    git(["diff"], dir).slice(0, 5000),
+  ].filter(Boolean).join("\n\n");
+}
+
+function touchedPaths(dir: string, base: string, artifacts: string[]): string[] {
+  const pending = changedFiles(dir).filter((f) => !artifacts.includes(f));
+  return [...new Set([...branchFiles(dir, base), ...pending])];
+}
+
+/**
+ * One verifier per call. The lease decides who goes first; `pendingVerifiers`
+ * decides who must go at all. A lease that times out therefore reorders the
+ * queue but can never let a required verifier be skipped.
+ */
+async function verify(task: Task, ctx: Ctx): Promise<void> {
+  const dir = task.worktree;
+  const branch = task.branch;
+  if (!dir || !branch) return fail(ctx, task, "nothing to verify — the build stage left no worktree");
+  const base = ctx.policy.repo.default_branch;
+  const events = readAll(ctx.paths.eventsFile);
+
+  const paths = touchedPaths(dir, base, task.setup_artifacts);
+  const lease = resolveLease(events.filter((e) => e.trace_id === task.id), ctx.policy, Date.now());
+  const pending = pendingVerifiers(events.filter((e) => e.trace_id === task.id),
+    ctx.policy, paths, AVAILABLE_VERIFIERS, lease.holder);
+
+  if (pending.length === 0) {
+    emit(ctx.paths.eventsFile, task.id, "verified", {
+      revision: task.revision, verifiers: AVAILABLE_VERIFIERS,
+    });
+    return;
+  }
+
+  const role = pending[0];
+  const spec = VERIFIERS[role];
+  if (!spec) return fail(ctx, task, `no verifier implemented for \`${role}\``);
+
+  emit(ctx.paths.eventsFile, task.id, "lease_acquired", {
+    holder: lease.holder, reason: lease.reason, ttl_seconds: ctx.policy.runtime.lease_ttl_seconds,
+  });
+
+  const tier = resolveTier(ctx.policy, role, task.task_class, task.ladder_step);
+  if (tier.kind === "escalate") return fail(ctx, task, `${role} exhausted the escalation ladder`);
+
+  const prompt = [
+    `Backlog item ${task.id}: ${task.text}`,
+    `\nAcceptance criteria — the definition of done:\n${task.acceptance.map((a) => `- ${a}`).join("\n")}`,
+    `\nDeclared scope: ${JSON.stringify(task.scope)}`,
+    `\nTest command: ${ctx.policy.repo.test_cmd}`,
+    `\nRevision ${task.revision} of this change:\n${branchDiff(dir, base)}`,
+  ].join("\n");
+
+  const span = await runSpan({
+    role, traceId: task.id, systemPrompt: spec.systemPrompt, prompt,
+    cwd: spec.inWorktree ? dir : ctx.paths.repoRoot,
+    tier: tier.tier, ladderStep: task.ladder_step,
+    budgetUsd: budgetLeft(ctx, task), tools: ROLE_TOOLS[role],
+  }, { policy: ctx.policy, eventsFile: ctx.paths.eventsFile, runner: ctx.runner });
+
+  if (!span.ok) return climb(ctx, task, task.ladder_step, spanFailure(span));
+
+  const out = extractJson<VerifierOutput>(span.text);
+  if (!out?.verdict) return climb(ctx, task, task.ladder_step, `${role} returned no parseable verdict`);
+
+  const findings = (out.findings ?? []).filter((f) => f?.file && f?.summary && f?.severity);
+  const blockers = findings.filter((f) => f.severity === "blocker");
+
+  // A block with no blocker is not a block. Treating it as one would let a
+  // verifier stop a change without ever saying what is wrong with it.
+  if (out.verdict === "block" && blockers.length > 0) {
+    emit(ctx.paths.eventsFile, task.id, "veto", {
+      role, revision: task.revision,
+      kind: ctx.policy.veto[role]?.type ?? "soft",
+      reason: blockers[0].summary,
+      findings,
+    });
+    return;
+  }
+
+  emit(ctx.paths.eventsFile, task.id, "verdict", {
+    role, revision: task.revision, findings,
+    note: out.verdict === "block"
+      ? `${role} said block but named no blocker; recorded as a pass with concerns`
+      : (out.note ?? ""),
+  });
 }
 
 /** Files the builder touched that the plan did not authorise. */
@@ -187,7 +310,11 @@ async function integrate(task: Task, ctx: Ctx): Promise<void> {
   push(dir, branch);
 
   const stat = diffStat(dir, base);
-  const concerns = [...(out.concerns ?? []), ...violations.map((v) => `outside declared scope: ${v}`)];
+  const concerns = [
+    ...concernsFor(readAll(ctx.paths.eventsFile), task.revision),
+    ...(out.concerns ?? []),
+    ...violations.map((v) => `outside declared scope: ${v}`),
+  ];
   const ready = out.ready !== false && violations.length === 0;
   const body = prBody(task, concerns, stat);
 
@@ -239,10 +366,21 @@ export async function advance(task: Task, ctx: Ctx): Promise<Task> {
     return reread();
   }
 
+  // Before any stage, not just before verification: a veto returns the task to
+  // the builder, so a check placed at the verify step would pay for another
+  // build before noticing the loop had stopped converging.
+  const stall = detectStall(readAll(ctx.paths.eventsFile).filter((e) => e.trace_id === task.id), ctx.policy);
+  if (stall) {
+    emit(ctx.paths.eventsFile, task.id, "stalled", stall);
+    emit(ctx.paths.eventsFile, task.id, "escalate", { reason: `${stall.kind}: ${stall.detail}` });
+    return reread();
+  }
+
   switch (task.state) {
     case "queued": await plan(task, ctx); break;
     case "planned": await build(task, ctx); break;
-    case "built": await integrate(task, ctx); break;
+    case "verifying": await verify(task, ctx); break;
+    case "integrating": await integrate(task, ctx); break;
     default: break;
   }
   return reread();

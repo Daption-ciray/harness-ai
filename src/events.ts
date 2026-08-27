@@ -1,7 +1,7 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname } from "node:path";
 import type { Effort, Role } from "./policy.ts";
-import type { Origin, TaskClass } from "./domain.ts";
+import type { Finding, Origin, TaskClass } from "./domain.ts";
 
 /**
  * The event log is the ONLY source of truth for task state. Everything a reader
@@ -24,7 +24,8 @@ export type EventShapes = {
     acceptance: string[]; steps: string[]; ladder_step: number;
   };
   ladder_advanced: { from: number; to: number; reason: string };
-  build_done: { files: string[] };
+  build_done: { files: string[]; revision: number };
+  verified: { revision: number; verifiers: Role[] };
   worktree_open: { branch: string; dir: string; setup_artifacts: string[]; setup_error: string | null };
   worktree_close: { dir: string };
 
@@ -37,7 +38,11 @@ export type EventShapes = {
   };
   tool_denied: { span_id: string; role: Role; tool: string; reason: string; command: string };
 
-  veto: { role: Role; kind: "hard" | "soft"; reason: string };
+  /** A verifier passed the current revision. Concerns may still be attached. */
+  verdict: { role: Role; revision: number; findings: Finding[]; note: string };
+  /** A verifier blocked the current revision. `findings` is never empty. */
+  veto: { role: Role; revision: number; kind: "hard" | "soft"; reason: string; findings: Finding[] };
+  stalled: { kind: "max_rounds" | "ping_pong" | "no_progress"; role: Role; detail: string };
   preempt: { from: Role; to: Role; reason: string };
   lease_acquired: { holder: Role; reason: string; ttl_seconds: number };
   lease_released: { holder: Role; reason: string };

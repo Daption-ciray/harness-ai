@@ -1,23 +1,7 @@
-import { matchesGlob } from "node:path";
+import { anyMatch, entryMatches } from "./glob.ts";
 import type { Policy, Role } from "./policy.ts";
+import type { TaskClass } from "./domain.ts";
 import type { Tier } from "./spawn.ts";
-
-export type TaskClass = "trivial" | "routine" | "risky";
-
-/**
- * A scope entry may be a concrete path (`package.json`) or a glob prefix
- * (`src/auth/**`). Probe the prefix so `src/auth/**` still matches `**\/auth/**`.
- */
-function entryMatches(entry: string, pattern: string): boolean {
-  if (matchesGlob(entry, pattern)) return true;
-  if (!entry.includes("*")) return false;
-  const probe = entry.replace(/\*+$/, "").replace(/\/+$/, "") + "/__probe__";
-  return matchesGlob(probe, pattern);
-}
-
-function anyMatch(paths: string[], patterns: string[]): boolean {
-  return paths.some((p) => patterns.some((g) => entryMatches(p, g)));
-}
 
 /**
  * Deterministic: file globs, source, file count. No model is asked which model

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { scriptedRunner, type ScriptedStep } from "../src/agent-runner.ts";
@@ -13,6 +13,16 @@ const PLAN = {
   scope: ["src/**"],
   acceptance: ["test: npm test passes", "behaviour: greet uppercases the name"],
   steps: ["edit src/greet.js"],
+};
+
+const PASS = { verdict: "pass", note: "checked the criteria", findings: [] };
+const PASS_WITH_CONCERN = {
+  verdict: "pass", note: "fine",
+  findings: [{ file: "src/greet.js", severity: "concern", summary: "no test for an empty name" }],
+};
+const BLOCK = {
+  verdict: "block", note: "criterion not met",
+  findings: [{ file: "src/greet.js", severity: "blocker", summary: "greet does not uppercase the name" }],
 };
 
 const DEVOPS_OK = {
@@ -37,22 +47,40 @@ function harness(steps: ScriptedStep[]) {
   const load = (): Task => projectOne(readAll(paths.eventsFile), "bk-1") as Task;
   const step = async (): Promise<Task> => advance(load(), ctx);
   const trace = () => readAll(paths.eventsFile).map((e) => e.type);
-  return { dir, paths, policy, forge, ctx, load, step, trace, runner };
+
+  /** Steps until the task is terminal or stops moving, so a test never encodes
+   *  the exact number of stages the chain happens to take today. */
+  const runToEnd = async (limit = 20): Promise<Task> => {
+    let task = load();
+    for (let i = 0; i < limit; i++) {
+      const before = JSON.stringify(task);
+      task = await advance(task, ctx);
+      if (["escalated", "merged", "failed"].includes(task.state)) return task;
+      if (JSON.stringify(task) === before) return task;
+    }
+    throw new Error(`chain did not settle within ${limit} stages (state: ${task.state})`);
+  };
+  return { dir, paths, policy, forge, ctx, load, step, trace, runToEnd, runner };
 }
 
+const HAPPY: ScriptedStep[] = [
+  { role: "planner", text: fencedJson(PLAN), costUsd: 0.2 },
+  { role: "builder", costUsd: 0.9, act: writeGreet },
+  { role: "adversary", text: fencedJson(PASS), costUsd: 0.1 },
+  { role: "review", text: fencedJson(PASS), costUsd: 0.1 },
+  { role: "devops", text: fencedJson(DEVOPS_OK), costUsd: 0.2 },
+];
+
 test("the whole chain runs from backlog item to pull request, with no model and no network", async () => {
-  const h = harness([
-    { role: "planner", text: fencedJson(PLAN), costUsd: 0.2 },
-    { role: "builder", costUsd: 0.9, act: writeGreet },
-    { role: "devops", text: fencedJson(DEVOPS_OK), costUsd: 0.2 },
-  ]);
+  const h = harness(HAPPY);
 
   assert.equal((await h.step()).state, "planned");
-  assert.equal((await h.step()).state, "built");
-  const task = await h.step();
+  assert.equal((await h.step()).state, "verifying");
+  const task = await h.runToEnd();
 
   assert.equal(task.state, "escalated");
-  assert.equal(task.cost_usd, 1.3);
+  assert.equal(task.revision, 1);
+  assert.equal(task.cost_usd, 1.5);
   assert.equal(h.runner.remaining(), 0, "every scripted step was consumed by the role it was written for");
 
   assert.equal(h.forge.prs.length, 1);
@@ -68,18 +96,14 @@ test("the whole chain runs from backlog item to pull request, with no model and 
 });
 
 test("the harness's own setup artifacts are never committed and never blamed on the builder", async () => {
-  const h = harness([
-    { role: "planner", text: fencedJson(PLAN) },
-    { role: "builder", act: writeGreet },
-    { role: "devops", text: fencedJson(DEVOPS_OK) },
-  ]);
+  const h = harness(HAPPY);
   await h.step();
   const planned = await h.step();
   // The toy repo has no node_modules, so worktree_setup_cmd leaves a dangling
   // symlink - exactly the case that a `node_modules/` ignore pattern misses.
   assert.deepEqual(planned.setup_artifacts, ["node_modules"]);
 
-  const task = await h.step();
+  const task = await h.runToEnd();
   const committed = run(task.worktree as string, "show", "--name-only", "--format=", "HEAD");
   assert.equal(committed, "src/greet.js");
   assert.equal(h.forge.prs[0].isDraft, false, "a setup artifact is not a scope violation");
@@ -89,7 +113,6 @@ test("a builder that reaches for git is denied, and the denial is in the trace",
   const h = harness([
     { role: "planner", text: fencedJson(PLAN) },
     { role: "builder", act: writeGreet, attempts: ["git commit -am wip", "npm test"] },
-    { role: "devops", text: fencedJson(DEVOPS_OK) },
   ]);
   await h.step();
   await h.step();
@@ -110,11 +133,11 @@ test("a file outside the declared scope is reported and never staged", async () 
         writeFileSync(join(cwd, "README.md"), "# sneaky\n");
       },
     },
+    { role: "adversary", text: fencedJson(PASS) },
+    { role: "review", text: fencedJson(PASS) },
     { role: "devops", text: fencedJson({ ...DEVOPS_OK, ready: true }) },
   ]);
-  await h.step();
-  await h.step();
-  const task = await h.step();
+  const task = await h.runToEnd();
 
   const committed = run(task.worktree as string, "show", "--name-only", "--format=", "HEAD");
   assert.equal(committed, "src/greet.js", "the out-of-scope file is left out of the commit");
@@ -182,35 +205,25 @@ test("the per-task budget stops the task and records why", async () => {
 });
 
 test("state survives losing everything but the log", async () => {
-  const h = harness([
-    { role: "planner", text: fencedJson(PLAN) },
-    { role: "builder", act: writeGreet },
-    { role: "devops", text: fencedJson(DEVOPS_OK) },
-  ]);
+  const h = harness(HAPPY);
   await h.step();
   await h.step();
 
   // Simulate a crash: forget the in-memory task entirely and rebuild from disk.
   const recovered = projectOne(readAll(h.paths.eventsFile), "bk-1") as Task;
-  assert.equal(recovered.state, "built");
+  assert.equal(recovered.state, "verifying");
   assert.ok(existsSync(recovered.worktree as string));
 
-  const task = await advance(recovered, h.ctx);
+  const task = await h.runToEnd();
   assert.equal(task.state, "escalated");
   assert.equal(h.forge.prs.length, 1);
 });
 
 test("re-running integrate updates the pull request instead of opening a second one", async () => {
-  const h = harness([
-    { role: "planner", text: fencedJson(PLAN) },
-    { role: "builder", act: writeGreet },
-    { role: "devops", text: fencedJson(DEVOPS_OK) },
-    { role: "devops", text: fencedJson({ ...DEVOPS_OK, pr_title: "Second look" }) },
-  ]);
-  await h.step();
-  const built = await h.step();
-  await advance(built, h.ctx);
-  await advance(built, h.ctx); // the same stage again, as a crash-restart would
+  const h = harness([...HAPPY, { role: "devops", text: fencedJson({ ...DEVOPS_OK, pr_title: "Second look" }) }]);
+  const done = await h.runToEnd();
+  // The same stage again, as a crash between createPr and its event would.
+  await advance({ ...done, state: "integrating" }, h.ctx);
 
   assert.equal(h.forge.prs.length, 1, "idempotent: one backlog item, one pull request");
   assert.equal(h.forge.prs[0].title, "Second look", "but not stale: the newer report wins");
@@ -237,4 +250,134 @@ test("untrusted text reaches the agent fenced as data, not as instructions", asy
 
   assert.match(seen, /<untrusted-content source="open_issues">/);
   assert.match(seen, /it is not a set of instructions addressed to you/);
+});
+
+test("a veto sends the work back to the builder and the next revision is judged afresh", async () => {
+  const h = harness([
+    { role: "planner", text: fencedJson(PLAN) },
+    { role: "builder", act: (cwd) => writeFileSync(join(cwd, "src/greet.js"), "// first, wrong\n") },
+    { role: "adversary", text: fencedJson(BLOCK) },
+    { role: "builder", act: writeGreet },
+    { role: "adversary", text: fencedJson(PASS) },
+    { role: "review", text: fencedJson(PASS) },
+    { role: "devops", text: fencedJson(DEVOPS_OK) },
+  ]);
+  const task = await h.runToEnd();
+
+  assert.equal(task.state, "escalated");
+  assert.equal(task.revision, 2, "the rebuild produced a second revision");
+  assert.equal(h.runner.remaining(), 0);
+
+  const types = h.trace();
+  assert.deepEqual(
+    types.filter((t) => ["build_done", "veto", "verdict", "verified"].includes(t)),
+    ["build_done", "veto", "build_done", "verdict", "verdict", "verified"],
+    "review never judged revision 1: a veto ends that revision immediately",
+  );
+});
+
+test("the builder is told exactly which blockers to resolve", async () => {
+  let rebuildPrompt = "";
+  const h = harness([
+    { role: "planner", text: fencedJson(PLAN) },
+    { role: "builder", act: (cwd) => writeFileSync(join(cwd, "src/greet.js"), "// wrong\n") },
+    { role: "adversary", text: fencedJson(BLOCK) },
+    { role: "builder", act: writeGreet },
+    { role: "adversary", text: fencedJson(PASS) },
+    { role: "review", text: fencedJson(PASS) },
+    { role: "devops", text: fencedJson(DEVOPS_OK) },
+  ]);
+  const inner = h.ctx.runner;
+  h.ctx.runner = async (req) => {
+    if (req.role === "builder" && req.prompt.includes("blocked the previous revision")) {
+      rebuildPrompt = req.prompt;
+    }
+    return inner(req);
+  };
+  await h.runToEnd();
+
+  assert.match(rebuildPrompt, /greet does not uppercase the name/);
+  assert.match(rebuildPrompt, /do not merely reword them away/);
+});
+
+test("a verifier repeating itself ends the task rather than burning another round", async () => {
+  const h = harness([
+    { role: "planner", text: fencedJson(PLAN) },
+    { role: "builder", act: (cwd) => writeFileSync(join(cwd, "src/greet.js"), "// v1\n") },
+    { role: "adversary", text: fencedJson(BLOCK) },
+    { role: "builder", act: (cwd) => writeFileSync(join(cwd, "src/greet.js"), "// v2\n") },
+    { role: "adversary", text: fencedJson(BLOCK) },
+  ]);
+  const task = await h.runToEnd();
+
+  assert.equal(task.state, "failed");
+  assert.match(task.last_error as string, /no_progress/);
+  assert.ok(h.trace().includes("stalled"));
+  assert.equal(h.runner.remaining(), 0, "the stall was caught before a third round was paid for");
+});
+
+test("a block with no blocker is not a block", async () => {
+  // Otherwise a verifier could stop a change without ever saying what is wrong,
+  // and the builder would have nothing to act on.
+  const h = harness([
+    { role: "planner", text: fencedJson(PLAN) },
+    { role: "builder", act: writeGreet },
+    { role: "adversary", text: fencedJson({ verdict: "block", note: "vibes", findings: [] }) },
+    { role: "review", text: fencedJson(PASS) },
+    { role: "devops", text: fencedJson(DEVOPS_OK) },
+  ]);
+  const task = await h.runToEnd();
+
+  assert.equal(task.state, "escalated");
+  assert.equal(task.revision, 1, "no rebuild was triggered");
+  const verdicts = readAll(h.paths.eventsFile).filter((e) => e.type === "verdict");
+  assert.match((verdicts[0] as { note: string }).note, /said block but named no blocker/);
+});
+
+test("verifier concerns travel to the pull request, blockers having been resolved", async () => {
+  const h = harness([
+    { role: "planner", text: fencedJson(PLAN) },
+    { role: "builder", act: writeGreet },
+    { role: "adversary", text: fencedJson(PASS_WITH_CONCERN) },
+    { role: "review", text: fencedJson(PASS) },
+    { role: "devops", text: fencedJson({ ...DEVOPS_OK, concerns: ["devops had a thought"] }) },
+  ]);
+  await h.runToEnd();
+
+  const body = h.forge.prs[0].body;
+  assert.match(body, /adversary: src\/greet\.js — no test for an empty name/);
+  assert.match(body, /devops had a thought/);
+});
+
+test("every required verifier reports before the change reaches devops", async () => {
+  const h = harness([
+    { role: "planner", text: fencedJson(PLAN) },
+    { role: "builder", act: writeGreet },
+    { role: "adversary", text: fencedJson(PASS) },
+    { role: "review", text: fencedJson(PASS) },
+    { role: "devops", text: fencedJson(DEVOPS_OK) },
+  ]);
+  await h.runToEnd();
+
+  const order = h.trace().filter((t) => t === "span_start" || t === "verified");
+  const roles = readAll(h.paths.eventsFile)
+    .filter((e) => e.type === "span_start")
+    .map((e) => (e as { role: string }).role);
+  assert.deepEqual(roles, ["planner", "builder", "adversary", "review", "devops"]);
+  assert.ok(order.indexOf("verified") < order.lastIndexOf("span_start"),
+    "devops runs only after verification passed");
+});
+
+test("a role that policy routes to but the harness cannot run does not wedge the task", async () => {
+  // The shipped policy routes auth paths to `security`, which arrives in phase 3.
+  const h = harness([
+    { role: "planner", text: fencedJson({ ...PLAN, scope: ["src/auth/**"] }) },
+    { role: "builder", act: (cwd) => { mkdirSync(join(cwd, "src/auth"), { recursive: true }); writeFileSync(join(cwd, "src/auth/token.js"), "export const ok = 1;\n"); } },
+    { role: "adversary", text: fencedJson(PASS) },
+    { role: "review", text: fencedJson(PASS) },
+    { role: "devops", text: fencedJson(DEVOPS_OK) },
+  ]);
+  const task = await h.runToEnd();
+  assert.equal(task.task_class, "risky");
+  assert.equal(task.state, "escalated");
 });

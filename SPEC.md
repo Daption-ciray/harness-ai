@@ -43,8 +43,8 @@ Bir rol ancak şu üçünden birine sahipse var olur:
 |---|---|---|---|---|
 | `planner` | — | 1 | backlog, task | DAG sahibi, default lease |
 | `builder` | — | ×N worktree | kod | Tek ölçeklenen düğüm |
-| `adversary` | soft | 1–2 | test | Teşvik çatışması: kırmaya çalışır |
-| `review` | soft (2 tur) | 1 | — | Kalite/tasarım domain'i |
+| `adversary` | soft | 1–2 | test | Teşvik çatışması: kırmaya çalışır. Worktree'de koşar — başarısız test yazmak en güçlü bulgudur |
+| `review` | soft (2 tur) | 1 | — | Kalite/tasarım domain'i. Araçsız; eline verilen diff'i okur |
 | `security` | **hard** | 1 | — | Tek gerçek hard veto |
 | `devops` | soft (CI) | **1, tekil** | git, gh, CI | git/CI'ın tek yazarı |
 | `scribe` | — | 1 | `decisions.md`, `context.md`, PR body | Hafızanın tek yazarı |
@@ -101,20 +101,38 @@ Deterministik kalır — tam P2P mesaj borsasına göre debug edilebilir.
 ## 6. Durum makinesi
 
 ```
-backlog → planned → building → verifying → reviewing → securing → integrating → merged
-              ↑         ↓          ↓           ↓           ↓
-              └─────────┴──────────┴───────────┘           ↓
-                    (veto → geri dön, tur sayacı +1)   quarantined
-                                                            ↓
-                                                    escalated → insan
+queued ─(planner)→ planned ─(builder)→ verifying ─(hepsi geçti)→ integrating ─(devops)→ escalated
+                      ↑                     │                                              │
+                      └──── soft veto ──────┤                                          insan merge
+                                            └── hard veto → quarantined → insan
 ```
+
+**Revision.** Her `build_done` revision'ı bir artırır. Verdict'ler her zaman *bir*
+revision hakkındadır; soft veto revision'ı kapatır, yeni build yeni revision üretir
+ve tüm doğrulayıcılar baştan karar verir.
+
+**Gate ≠ lease.** Hangi doğrulayıcıların rapor vermesi gerektiği (`verify.ts`) ile
+sıranın kime ait olduğu (`lease.ts`) ayrı sorulardır. Bu ayrım sayesinde lease'in
+TTL ile geri alınması hiçbir zorunlu doğrulayıcıyı atlayamaz.
+
+**Bulgular yapısaldır.** Doğrulayıcı düzyazı değil `{file, line?, severity, summary}`
+döner. Yalnız `blocker` veto sayılır; `concern` PR gövdesine gider. Durma
+dedektörleri bu yapı üstünde mekanik çalışır — iki şikâyetin "aynı" olup olmadığına
+model karar vermez.
 
 ### Durma koşulları
 - Task başına round + USD bütçesi
-- Aynı bulgu 3. kez → escalate
-- Veto ping-pong dedektörü: A veto → B fix → A yine veto, aynı dosya → escalate
-- 2 tur üst üste yeni bulgu yok → kapat
-- `review` soft veto max 2 tur, sonra escalate
+Üç dedektör, hepsi `blocker` bulgu anahtarları üstünde deterministik:
+
+- **`max_rounds`** — rol veto hakkını tüketti (`review` 2, `adversary` 3)
+- **`no_progress`** — ardışık iki revision'da aynı blocker kümesi. Builder bir şey
+  değiştirdi, şikâyet değişmedi; bir tur daha fayda etmez. Anahtar kasten kaba:
+  şikâyeti yeniden ifade etmek yeni bilgi sayılmaz.
+- **`ping_pong`** — temizlenen bir blocker geri geldi; iki taraf birbirini geri alıyor
+
+Kontrol **her aşamadan önce** koşar, sadece doğrulamadan önce değil: veto görevi
+builder'a geri gönderir, ve doğrulama adımına konmuş bir kontrol bunu fark etmeden
+önce bir build daha ödetir.
 
 ---
 

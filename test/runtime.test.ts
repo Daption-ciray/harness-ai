@@ -11,7 +11,10 @@ test("events round-trip through JSONL with their fields intact", () => {
   emit(file, "bk-1", "span_start", {
     span_id: "s1", role: "builder", model: "m", effort: "high", ladder_step: 0,
   });
-  emit(file, "bk-2", "veto", { role: "security", kind: "hard", reason: "secret in diff" });
+  emit(file, "bk-2", "veto", {
+    role: "security", revision: 1, kind: "hard",
+    reason: "secret in diff", findings: [{ file: "src/a.ts", summary: "api key", severity: "blocker" }],
+  });
 
   const all = readAll(file);
   assert.equal(all.length, 2);

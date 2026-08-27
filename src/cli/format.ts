@@ -27,7 +27,13 @@ export function describe(event: HarnessEvent): string {
     case "task_planned":
       return `${event.task_class} · rung ${event.ladder_step} · ${event.scope.length} scope, ${event.acceptance.length} criteria`;
     case "ladder_advanced": return `rung ${event.from} → ${event.to} · ${event.reason}`;
-    case "build_done": return `${event.files.length} files changed`;
+    case "build_done": return `revision ${event.revision} · ${event.files.length} files changed`;
+    case "verified": return `revision ${event.revision} · ${event.verifiers.join(", ")} all passed`;
+    case "verdict":
+      return `${event.role} · revision ${event.revision} · pass` +
+        (event.findings.length ? ` · ${event.findings.length} concern(s)` : "") +
+        (event.note ? ` · ${event.note}` : "");
+    case "stalled": return `${event.kind} · ${event.detail}`;
     case "worktree_open":
       return `${event.branch}${event.setup_error ? ` · setup failed: ${event.setup_error}` : ""}`;
     case "worktree_close": return event.dir;
@@ -36,7 +42,9 @@ export function describe(event: HarnessEvent): string {
       return `${event.role} · ${money(event.cost_usd)} · ${event.num_turns} turns · ` +
         `${event.ok ? "ok" : event.subtype}${event.denials ? ` · ${event.denials} denied` : ""}`;
     case "tool_denied": return `${event.role} · ${event.tool} · ${event.command}`;
-    case "veto": return `${event.role} · ${event.kind} · ${event.reason}`;
+    case "veto":
+      return `${event.role} · ${event.kind} · revision ${event.revision} · ` +
+        `${event.findings.filter((f) => f.severity === "blocker").length} blocker(s) · ${event.reason}`;
     case "preempt": return `${event.from} → ${event.to} · ${event.reason}`;
     case "lease_acquired": return `${event.holder} · ${event.reason} · ttl ${event.ttl_seconds}s`;
     case "lease_released": return `${event.holder} · ${event.reason}`;
