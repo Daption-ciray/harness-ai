@@ -12,7 +12,7 @@ Design and rationale: [`SPEC.md`](./SPEC.md).
 
 ## Status
 
-Phases 0-5 complete and verified end to end against a real repository. See
+Phases 0-6 complete and verified end to end against a real repository. See
 `SPEC.md` § 16 for the phase plan.
 
 ## Design
@@ -31,6 +31,14 @@ double. Routing, tiering, scope enforcement, the state machine, git plumbing and
 the whole planner → builder → devops chain are exercised against the doubles
 over a real git repository with a real bare `origin`, so the only thing that
 costs money to test is the adapter itself.
+
+**Observability reads from one place.** `trace`, `stats` and the dashboard are
+three renderings of the same pure functions over the event log (`src/report.ts`),
+because three copies of the same aggregation drift apart and the first time they
+disagree nobody knows which is lying. The most actionable number is *what keeps
+blocking*: a verifier that blocks on the same thing across tasks is describing a
+rule, and a rule belongs in policy rather than in a model round paid for on every
+task that trips over it.
 
 **Work comes from sensors, and they are plain code.** Noticing that the test
 suite is red does not need a model, so nothing pays one to notice it every
@@ -92,6 +100,9 @@ node bin/harness.ts ask --file spec.md         # ...or hand it a spec
 node bin/harness.ts start                      # run the daemon
 node bin/harness.ts waiting                    # what needs you, and why
 node bin/harness.ts answer bk-3 "use Auth0"    # unblock a question
+node bin/harness.ts trace bk-3                 # one task's whole life
+node bin/harness.ts stats                      # where the time and allowance went
+node bin/harness.ts ui                         # live dashboard on 127.0.0.1:7777
 ```
 
 Work reaches the harness two ways: **you ask for it**, or a sensor finds it.

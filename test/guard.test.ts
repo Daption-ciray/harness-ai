@@ -17,22 +17,46 @@ test("devops is the only role allowed to run git or gh", () => {
   }
 });
 
-test("git hidden behind a separator or a subshell is still caught", () => {
+test("the word git inside an argument is text, not a command", () => {
+  // A real verifier lost a turn to `grep -rn "not a git repository" .` being
+  // read as running git. A guard that blocks honest work teaches agents to
+  // route around it, which is worse than the guard not existing.
   for (const cmd of [
+    'grep -rn "not a git repository" /path',
+    'echo "use git to clone this"',
+    "cat gitignore.md",
+    "npm test", "node --test", "echo github", "ls .github", "cat digit.txt",
+    "rg --files-with-matches 'gh pr create'",
+  ]) {
+    assert.equal(deny("builder", cmd), null, cmd);
+  }
+});
+
+test("command position is what counts, wherever the shell would find it", () => {
+  for (const cmd of [
+    "git push",
     "cd /tmp && git push",
     "echo hi; gh pr merge 3",
     "true || git reset --hard",
-    "$(git rev-parse HEAD)",
-    "`git log`",
+    'echo "$(git log)"',
+    "x=`git rev-parse HEAD`",
+    "sudo git push",
+    "FOO=1 git push",
+    "/usr/bin/git push",
+    "ls | xargs gh issue create",
+    "( git status )",
+    "git status > out.txt",
   ]) {
     assert.notEqual(deny("builder", cmd), null, cmd);
   }
 });
 
-test("ordinary commands and lookalike words are left alone", () => {
-  for (const cmd of ["npm test", "node --test", "echo github", "ls .github", "cat digit.txt"]) {
-    assert.equal(deny("builder", cmd), null, cmd);
-  }
+test("commandHeads reports what a line would actually run", async () => {
+  const { commandHeads } = await import("../src/permissions.ts");
+  assert.deepEqual(commandHeads("npm test"), ["npm"]);
+  assert.deepEqual(commandHeads("cd /tmp && git push"), ["cd", "git"]);
+  assert.deepEqual(commandHeads('echo "$(git log)"').sort(), ["echo", "git"]);
+  assert.deepEqual(commandHeads(""), []);
 });
 
 test("recursive force delete is denied for every role, devops included", () => {

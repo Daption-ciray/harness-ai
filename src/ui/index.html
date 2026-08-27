@@ -1,0 +1,137 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>harness</title>
+<style>
+  :root {
+    --bg: #0d1117; --panel: #161b22; --line: #30363d; --fg: #e6edf3;
+    --dim: #8b949e; --accent: #58a6ff; --ok: #3fb950; --warn: #d29922; --bad: #f85149;
+  }
+  @media (prefers-color-scheme: light) {
+    :root { --bg:#fff; --panel:#f6f8fa; --line:#d0d7de; --fg:#1f2328; --dim:#656d76;
+            --accent:#0969da; --ok:#1a7f37; --warn:#9a6700; --bad:#cf222e; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 13px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace; }
+  header { padding: 14px 18px; border-bottom: 1px solid var(--line); display: flex; gap: 18px; align-items: baseline; flex-wrap: wrap; }
+  h1 { font-size: 14px; margin: 0; font-weight: 600; letter-spacing: .04em; }
+  .dim { color: var(--dim); }
+  .live::before { content: "●"; color: var(--ok); margin-right: 6px; }
+  .stale::before { content: "●"; color: var(--bad); margin-right: 6px; }
+  main { display: grid; grid-template-columns: minmax(320px, 1fr) minmax(360px, 1.4fr); gap: 1px; background: var(--line); min-height: calc(100vh - 52px); }
+  section { background: var(--bg); padding: 14px 18px; overflow: auto; }
+  h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .09em; color: var(--dim); margin: 0 0 10px; font-weight: 600; }
+  table { border-collapse: collapse; width: 100%; }
+  td { padding: 3px 10px 3px 0; vertical-align: top; white-space: nowrap; }
+  td.wrap { white-space: normal; word-break: break-word; }
+  tr.task { cursor: pointer; }
+  tr.task:hover td { background: var(--panel); }
+  tr.task.sel td { background: var(--panel); box-shadow: inset 2px 0 0 var(--accent); }
+  .pill { padding: 1px 7px; border-radius: 9px; font-size: 11px; border: 1px solid var(--line); }
+  .merged { color: var(--ok); border-color: var(--ok); }
+  .escalated, .blocked { color: var(--warn); border-color: var(--warn); }
+  .failed { color: var(--bad); border-color: var(--bad); }
+  pre { margin: 0; white-space: pre-wrap; word-break: break-word; }
+  .ev { display: grid; grid-template-columns: 62px 74px 130px 1fr; gap: 10px; padding: 2px 0; border-bottom: 1px solid transparent; }
+  .ev:hover { border-bottom-color: var(--line); }
+  .ev b { font-weight: 600; color: var(--accent); }
+  .bar { display: inline-block; height: 7px; background: var(--accent); border-radius: 2px; vertical-align: middle; }
+  .empty { color: var(--dim); padding: 20px 0; }
+</style>
+
+<header>
+  <h1>harness</h1>
+  <span id="slug" class="dim"></span>
+  <span id="conn" class="dim live">live</span>
+  <span id="usage" class="dim"></span>
+</header>
+
+<main>
+  <section>
+    <h2>Tasks</h2>
+    <table id="tasks"></table>
+    <h2 style="margin-top:26px">Where it goes</h2>
+    <div id="stats"></div>
+  </section>
+  <section>
+    <h2 id="feedTitle">Activity</h2>
+    <div id="feed"></div>
+  </section>
+</main>
+
+<script type="module">
+const $ = (id) => document.getElementById(id);
+let state = { tasks: [], events: [], stats: null, slug: "" };
+let selected = null;
+
+const time = (ts) => new Date(ts).toTimeString().slice(0, 8);
+const money = (n) => "$" + Number(n).toFixed(4);
+
+function renderTasks() {
+  const rows = state.tasks.slice().reverse();
+  $("tasks").innerHTML = rows.length ? rows.map((t) => `
+    <tr class="task ${t.id === selected ? "sel" : ""}" data-id="${t.id}">
+      <td><b>${t.id}</b></td>
+      <td><span class="pill ${t.state}">${t.state}</span></td>
+      <td class="dim">${money(t.cost_usd)}</td>
+      <td class="wrap">${escape(t.text.split("\n")[0].slice(0, 70))}</td>
+    </tr>`).join("") : `<tr><td class="empty">nothing yet — <code>harness ask "..."</code></td></tr>`;
+  for (const row of document.querySelectorAll("tr.task")) {
+    row.onclick = () => { selected = selected === row.dataset.id ? null : row.dataset.id; renderTasks(); renderFeed(); };
+  }
+}
+
+function renderFeed() {
+  const shown = selected ? state.events.filter((e) => e.trace_id === selected) : state.events;
+  $("feedTitle").textContent = selected ? `Activity · ${selected}` : "Activity";
+  const tail = shown.slice(-300).reverse();
+  $("feed").innerHTML = tail.length ? tail.map((e) => `
+    <div class="ev">
+      <span class="dim">${time(e.ts)}</span>
+      <span class="dim">${e.trace_id}</span>
+      <b>${e.type}</b>
+      <span class="wrap">${escape(e.summary ?? "")}</span>
+    </div>`).join("") : `<div class="empty">no events</div>`;
+}
+
+function renderStats() {
+  const s = state.stats;
+  if (!s) return;
+  $("usage").textContent = `~${money(s.spend.total)} · ${s.tasks} tasks · ${Math.round(s.cache.ratio * 100)}% cached`;
+  const rows = Object.entries(s.spend.byRole).sort((a, b) => b[1] - a[1]);
+  const max = Math.max(1, ...rows.map(([, n]) => n));
+  const ladder = s.ladder.finished
+    ? `${s.ladder.onFirstAttempt}/${s.ladder.finished} finished without climbing`
+    : "nothing finished yet";
+  const blocking = s.vetoes.recurring.length
+    ? s.vetoes.recurring.map((p) => `<div class="wrap">${p.tasks.length}× ${escape(p.summary)}<br><span class="dim">a policy rule, not a model round</span></div>`).join("")
+    : `<div class="dim">nothing recurring</div>`;
+  $("stats").innerHTML = `
+    <table>${rows.map(([role, n]) => `
+      <tr><td>${role}</td>
+          <td style="width:100%"><span class="bar" style="width:${(n / max) * 100}%"></span></td>
+          <td class="dim">${money(n)}</td></tr>`).join("")}
+    </table>
+    <div class="dim" style="margin-top:12px">ladder — ${ladder}</div>
+    <h2 style="margin-top:22px">What keeps blocking</h2>${blocking}`;
+}
+
+function escape(text) {
+  return String(text).replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" })[c]);
+}
+
+const source = new EventSource("/events");
+source.onmessage = (message) => {
+  const payload = JSON.parse(message.data);
+  if (payload.kind === "snapshot") {
+    state = payload;
+    $("slug").textContent = payload.slug;
+  } else {
+    state.events.push(...payload.events);
+    state.tasks = payload.tasks;
+    state.stats = payload.stats;
+  }
+  renderTasks(); renderFeed(); renderStats();
+};
+source.onerror = () => { $("conn").className = "dim stale"; $("conn").textContent = "disconnected"; };
+source.onopen = () => { $("conn").className = "dim live"; $("conn").textContent = "live"; };
+</script>

@@ -544,6 +544,32 @@ Node repolarında `worktree_setup_cmd` da buradan gelir.
 `failed` ve `merged` görevlerin worktree'si silinir. `escalated` olanınki kalır —
 insan hâlâ bakıyor olabilir, ve sayısı WIP limitiyle sınırlı.
 
+## 11c. Görünürlük
+
+Üçü de — `trace`, `stats`, dashboard — **aynı saf fonksiyonları** okur
+(`src/report.ts`). Aynı toplamanın üç kopyası birbirinden ayrışır ve ilk
+anlaşmazlıkta hangisinin yalan söylediği bilinemez.
+
+**`harness trace <id>`** — görevin tüm hayatı, ağaç olarak. Redler onları deneyen
+span'in altında, çıktılar onları üreten span'in altında asılı: sorulan soru "bu
+ajan ne yaptı", ve düz bir event listesi bunu her seferinde kafanda yeniden
+kurmanı istiyor.
+
+**`harness stats`** — en eyleme geçirilebilir sütun **"ne blokluyor"**: bir
+doğrulayıcı görevler arasında aynı şeye takılıyorsa bir *kural* tarif ediyordur, ve
+kuralın yeri policy'dir — ona takılan her görevde ödenen bir model turu değil.
+
+Diğerleri: rol/model başına harcama, **merdiven skoru** (görevler rutin olarak
+tırmanıyorsa ucuz basamak yanlış seçilmiş, her görev keşfi iki kez ödüyor), rol
+başına **medyan** süre (bir takılan span ortalamayı bozar), guard redleri, ve
+cache oranı — çok sayıda span'de sıfır okuma, stabil prefix'e sızmış sessiz bir
+invalidator'ın imzasıdır.
+
+**`harness ui`** — `node:http` + SSE + tek HTML dosyası, 127.0.0.1'de. Framework
+yok, build adımı yok: bakılan şey yerel append-only bir dosya ve fazlası `tail`
+etrafında iskele olurdu. **Yapısı gereği salt okunur** — açık bırakmak harness'ın
+davranışını değiştiremez.
+
 ## 12. Event / trace şeması
 
 Ayrı tracing sistemi yok. `events.jsonl` zaten trace store; eklenen tek şey `trace_id`.

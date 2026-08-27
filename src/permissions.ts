@@ -16,8 +16,48 @@ import type { Policy, Role } from "./policy.ts";
  *    holds on a platform where the sandbox is unavailable.
  */
 
-/** Reaches `git`/`gh` however it is dressed up: separators, subshells, backticks. */
-const GIT_LIKE = /(^|[\s;&|(`$])(git|gh|gh-axi)(\s|$)/;
+const GIT_LIKE = new Set(["git", "gh", "gh-axi"]);
+
+/** Wrappers that take the real command as their argument. */
+const PASSTHROUGH = new Set(["sudo", "env", "command", "exec", "nohup", "time", "xargs", "nice", "doas"]);
+
+/**
+ * The commands a shell line would actually RUN, in command position.
+ *
+ * A substring match is not good enough in either direction. It misses
+ * `echo "$(git push)"`, where the command hides inside an expansion, and it
+ * fires on `grep -rn "not a git repository" .`, where the word is just text —
+ * that false positive cost a real verifier a wasted turn, and a guard that
+ * blocks honest work teaches agents to route around it.
+ *
+ * So: recurse into every `$(...)` and backtick expansion, split the rest on the
+ * separators a shell treats as ending a command, and look only at the first
+ * word of each piece.
+ */
+export function commandHeads(line: string): string[] {
+  const heads: string[] = [];
+  let rest = line;
+
+  // Expansions execute wherever they appear, quoted or not.
+  for (const pattern of [/\$\(([^()]*)\)/g, /`([^`]*)`/g]) {
+    for (const match of line.matchAll(pattern)) heads.push(...commandHeads(match[1]));
+    rest = rest.replace(pattern, " ");
+  }
+
+  for (const segment of rest.split(/;|\n|&&|\|\||\||&/)) {
+    // Strip grouping, redirections and leading VAR=value assignments.
+    const words = segment
+      .replace(/[(){}]/g, " ")
+      .replace(/[<>]+\s*\S+/g, " ")
+      .trim()
+      .split(/\s+/)
+      .filter(Boolean);
+    let i = 0;
+    while (i < words.length && (/^[A-Za-z_][A-Za-z0-9_]*=/.test(words[i]) || PASSTHROUGH.has(words[i]))) i += 1;
+    if (i < words.length) heads.push(words[i].replace(/^.*\//, ""));
+  }
+  return heads;
+}
 
 /** `-rf`, `-fr`, `-r -f` and `--recursive --force` are the same command. */
 function isRecursiveForceRm(command: string): boolean {
@@ -103,7 +143,8 @@ function pathFrom(input: Record<string, unknown>): string | null {
 }
 
 export function screenCommand(policy: Policy, role: Role, command: string): string | null {
-  if (!policy.permissions.git_allowed_for.includes(role) && GIT_LIKE.test(command)) {
+  const heads = commandHeads(command);
+  if (!policy.permissions.git_allowed_for.includes(role) && heads.some((h) => GIT_LIKE.has(h))) {
     return `role \`${role}\` may not run git or gh — only ${policy.permissions.git_allowed_for.join(", ")} may. ` +
       `Write files; the harness commits them.`;
   }

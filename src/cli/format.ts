@@ -9,6 +9,17 @@ export function ago(iso: string | null): string {
   return `${Math.round(s / 86400)}d ago`;
 }
 
+export function duration(ms: number | null): string {
+  if (ms === null) return "open";
+  if (ms < 1000) return `${ms}ms`;
+  const s = Math.round(ms / 1000);
+  return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m${String(s % 60).padStart(2, "0")}s`;
+}
+
+export function tokens(n: number): string {
+  return n >= 1000 ? `${Math.round(n / 1000)}k` : String(n);
+}
+
 export function money(usd: number): string {
   return `$${usd.toFixed(4)}`;
 }

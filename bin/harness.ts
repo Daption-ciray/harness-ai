@@ -5,6 +5,9 @@ import { answer, ask, cancel, runOnce, tasks, waiting } from "../src/cli/backlog
 import { readFileSync } from "node:fs";
 import { init } from "../src/cli/init.ts";
 import { status } from "../src/cli/status.ts";
+import { trace } from "../src/cli/trace.ts";
+import { stats } from "../src/cli/stats.ts";
+import { ui } from "../src/cli/ui.ts";
 
 const USAGE = `harness — multi-agent development harness
 
@@ -16,6 +19,9 @@ const USAGE = `harness — multi-agent development harness
   harness ask "<what you want>"  ask for a change; also --file <path> or stdin
   harness answer <id> "<text>"  answer a question the planner stopped on
   harness waiting               everything that needs you, and why
+  harness trace <id>            one task's whole life, as a tree
+  harness stats [--days <n>]    where the time and the allowance went
+  harness ui [--port <n>]       live dashboard on 127.0.0.1
   harness tasks [--json]         list every task and its state
   harness run [<id>]            advance one task by one stage, in the foreground
   harness cancel <id> "<why>"   retire a task; recorded, never deleted
@@ -26,6 +32,8 @@ const { positionals, values } = parseArgs({
   options: {
     force: { type: "boolean", default: false },
     file: { type: "string" },
+    days: { type: "string" },
+    port: { type: "string" },
     untrusted: { type: "boolean", default: false },
     help: { type: "boolean", default: false },
     json: { type: "boolean", default: false },
@@ -64,6 +72,13 @@ try {
   } else if (cmd === "answer") {
     if (!rest[0]) throw new Error('answer needs a task id: harness answer bk-1 "..."');
     console.log(answer(cwd, rest[0], rest.slice(1).join(" ")));
+  } else if (cmd === "trace") {
+    if (!rest[0]) throw new Error("trace needs a task id: harness trace bk-1");
+    console.log(trace(cwd, rest[0]));
+  } else if (cmd === "stats") {
+    console.log(stats(cwd, values.days ? Number(values.days) : 30));
+  } else if (cmd === "ui") {
+    await ui(cwd, values.port ? Number(values.port) : 7777);
   } else if (cmd === "waiting") {
     console.log(waiting(cwd));
   } else if (cmd === "cancel") {
