@@ -81,7 +81,9 @@ export function apply(task: Task, event: HarnessEvent): Task {
     case "build_done":
       return next({ state: "verifying", revision: event.revision, last_error: null });
     case "verified":
-      return next({ state: "integrating", last_error: null });
+      return next({ state: "scribing", last_error: null });
+    case "decision_written":
+      return next({ state: "integrating" });
     case "verdict":
       return task; // trace history; the gate is computed, not stored
     case "veto":

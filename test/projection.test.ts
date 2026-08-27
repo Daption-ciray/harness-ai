@@ -19,6 +19,7 @@ const span = (role: "planner" | "builder" | "devops", cost: number, ok = true) =
     span_id: "s1", role, model: "m", effort: "high" as const, ladder_step: 0,
     cost_usd: cost, session_id: "sess", ok, subtype: ok ? "success" : "error_during_execution",
     num_turns: 1, denials: 0, error: ok ? null : "boom", model_usage: {},
+    cache_read_tokens: 0, cache_creation_tokens: 0,
   });
 
 const happyPath = (): HarnessEvent[] => [

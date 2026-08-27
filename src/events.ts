@@ -26,6 +26,7 @@ export type EventShapes = {
   ladder_advanced: { from: number; to: number; reason: string };
   build_done: { files: string[]; revision: number };
   verified: { revision: number; verifiers: Role[] };
+  decision_written: { title: string; anchors: string[]; constraint: string | null };
   worktree_open: { branch: string; dir: string; setup_artifacts: string[]; setup_error: string | null };
   worktree_close: { dir: string };
 
@@ -34,6 +35,7 @@ export type EventShapes = {
     span_id: string; role: Role; model: string; effort: Effort; ladder_step: number;
     cost_usd: number; session_id: string; ok: boolean; subtype: string;
     num_turns: number; denials: number; error: string | null;
+    cache_read_tokens: number; cache_creation_tokens: number;
     model_usage: Record<string, unknown>;
   };
   tool_denied: { span_id: string; role: Role; tool: string; reason: string; command: string };

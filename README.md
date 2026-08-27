@@ -12,7 +12,7 @@ Design and rationale: [`SPEC.md`](./SPEC.md).
 
 ## Status
 
-Phases 0-3 complete and verified end to end against a real repository. See
+Phases 0-4 complete and verified end to end against a real repository. See
 `SPEC.md` § 16 for the phase plan.
 
 ## Design
@@ -31,6 +31,14 @@ double. Routing, tiering, scope enforcement, the state machine, git plumbing and
 the whole planner → builder → devops chain are exercised against the doubles
 over a real git repository with a real bare `origin`, so the only thing that
 costs money to test is the adapter itself.
+
+**Memory is derived, not maintained.** The brief every agent is given is
+rendered from `decisions.md` — which holds only decisions that merged, because
+the entry travels in the same pull request as the code — plus repeated findings
+in the event log. There is no second file to refresh, and the brief cannot
+describe a change that never landed. It carries no timestamps or ids, so it sits
+in the cached prefix: measured at 12,582 tokens read from cache on a second
+spawn. See `SPEC.md` § 10.
 
 **Security is layered, and the layers do different jobs.** The OS sandbox
 (macOS Seatbelt, Linux/WSL2) is the only real enforcement over Bash — a regex

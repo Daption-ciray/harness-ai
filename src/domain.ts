@@ -8,13 +8,14 @@ export type TaskState =
   | "queued"       // needs the planner
   | "planned"      // needs a builder
   | "verifying"    // built; the verifiers have not all reported yet
-  | "integrating"  // verified; needs devops
+  | "scribing"     // verified; the decision entry is not written yet
+  | "integrating"  // verified and recorded; needs devops
   | "escalated"    // pull request open, waiting on a human
   | "merged"
   | "failed";
 
 export const ACTIVE_STATES: readonly TaskState[] =
-  ["queued", "planned", "verifying", "integrating"];
+  ["queued", "planned", "verifying", "scribing", "integrating"];
 
 /**
  * A verifier reports findings, not prose. Only a `blocker` is a veto; a
@@ -31,14 +32,27 @@ export type Finding = {
   severity: Severity;
 };
 
+function normalise(summary: string): string {
+  return summary.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim().slice(0, 60);
+}
+
 /**
- * Identity of a finding for deduplication. Deliberately coarse: a verifier that
- * rewords the same complaint must not read as new information.
+ * Identity for stall detection: the same complaint about the same file.
+ * Deliberately coarse on the wording, so a verifier that rephrases itself does
+ * not read as new information.
  */
 export function findingKey(finding: Finding): string {
-  const normalised = finding.summary
-    .toLowerCase().replace(/[^a-z0-9]+/g, " ").trim().slice(0, 60);
-  return `${finding.file}::${normalised}`;
+  return `${finding.file}::${normalise(finding.summary)}`;
+}
+
+/**
+ * Identity for pitfalls, which deliberately ignores the file. The same mistake
+ * appearing in different files across different tasks is what makes it a
+ * property of the codebase rather than of one change — keying on the file would
+ * hide exactly the pattern worth remembering.
+ */
+export function summaryKey(finding: Finding): string {
+  return normalise(finding.summary);
 }
 
 export function isActiveState(state: TaskState): boolean {

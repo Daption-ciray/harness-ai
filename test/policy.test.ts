@@ -56,3 +56,13 @@ test("a missing required section is rejected rather than defaulted", () => {
   const broken = TEMPLATE.replace(/^budget:$/m, "budget_typo:");
   assert.throws(() => parsePolicy(broken), PolicyError);
 });
+
+test("an additive section keeps older policy files loading", () => {
+  // A schema change that invalidates every deployed config is a migration.
+  // Adding a field with defaults must never be one.
+  const withoutMemory = TEMPLATE.replace(/^memory:[\s\S]*?\n\nsensors:/m, "sensors:");
+  assert.ok(!withoutMemory.includes("context_budget_chars"));
+  const policy = parsePolicy(withoutMemory);
+  assert.equal(policy.memory.context_budget_chars, 8000);
+  assert.equal(policy.memory.pitfall_threshold, 3);
+});

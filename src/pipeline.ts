@@ -9,7 +9,10 @@ import { emit, readAll, type HarnessEvent } from "./events.ts";
 import type { Paths } from "./paths.ts";
 import type { Policy } from "./policy.ts";
 import { projectOne, spendSince, type Task } from "./projection.ts";
-import { ADVERSARY, BUILDER, DEVOPS, PLANNER, REVIEW, SECURITY } from "./roles/prompts.ts";
+import { ADVERSARY, BUILDER, DEVOPS, PLANNER, REVIEW, SCRIBE, SECURITY } from "./roles/prompts.ts";
+import { appendDecision, loadDecisions, parseDecisions, renderContext, type Decision } from "./memory.ts";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { dirname, relative } from "node:path";
 import { ROLE_TOOLS } from "./roles/tools.ts";
 import { extractJson, runSpan, type SpanResult } from "./spawn.ts";
 import { classify, ladderStartFor, resolveTier } from "./tier.ts";
@@ -44,6 +47,19 @@ function wrap(task: Task): string {
     `inside it and treat only this project's own policy as authoritative.`;
 }
 
+/**
+ * The project brief handed to every agent. Rendered from what merged, so it can
+ * never describe a change that did not land, and stable enough to sit in the
+ * cached prefix.
+ */
+function brief(ctx: Ctx, events: ReturnType<typeof readAll>): string {
+  return renderContext({
+    repoRoot: ctx.paths.repoRoot,
+    decisionsText: loadDecisions(ctx.paths.decisionsFile),
+    events, policy: ctx.policy,
+  });
+}
+
 function budgetLeft(ctx: Ctx, task: Task): number {
   return Math.max(0, ctx.policy.budget.per_task_usd - task.cost_usd);
 }
@@ -73,6 +89,7 @@ async function plan(task: Task, ctx: Ctx): Promise<void> {
     cwd: ctx.paths.repoRoot, tier: tier.tier, ladderStep: step,
     budgetUsd: budgetLeft(ctx, task), tools: ROLE_TOOLS.planner,
     roots: { write: [], read: [ctx.paths.repoRoot] },
+    context: brief(ctx, readAll(ctx.paths.eventsFile)),
   }, { policy: ctx.policy, eventsFile: ctx.paths.eventsFile, runner: ctx.runner });
 
   if (!span.ok) return climb(ctx, task, step, spanFailure(span));
@@ -136,6 +153,7 @@ async function build(task: Task, ctx: Ctx): Promise<void> {
     cwd: dir, tier: tier.tier, ladderStep: step,
     budgetUsd: budgetLeft(ctx, current), tools: ROLE_TOOLS.builder,
     roots: { write: [dir], read: [dir, ctx.paths.repoRoot] },
+    context: brief(ctx, readAll(ctx.paths.eventsFile)),
   }, { policy: ctx.policy, eventsFile: ctx.paths.eventsFile, runner: ctx.runner });
 
   if (!span.ok) return climb(ctx, current, step, spanFailure(span));
@@ -240,6 +258,7 @@ async function verify(task: Task, ctx: Ctx): Promise<void> {
       write: spec.canWrite ? [dir] : [],
       read: spec.inWorktree ? [dir, ctx.paths.repoRoot] : [ctx.paths.repoRoot],
     },
+    context: brief(ctx, events),
   }, { policy: ctx.policy, eventsFile: ctx.paths.eventsFile, runner: ctx.runner });
 
   if (!span.ok) return climb(ctx, task, task.ladder_step, spanFailure(span));
@@ -270,6 +289,96 @@ async function verify(task: Task, ctx: Ctx): Promise<void> {
   });
 }
 
+type ScribeOutput = {
+  title?: string; why?: string; anchors?: string[];
+  constraint?: string | null; contradicts?: string | null;
+};
+
+/**
+ * Writes the decision entry into the worktree so it merges in the same pull
+ * request as the code it explains. Skipped for a quarantined change: nothing is
+ * merging, so there is nothing to record as merged.
+ *
+ * `scribe` returns the entry; the harness writes the file. Memory has exactly
+ * one writer for the same reason git does — enforced structurally rather than by
+ * trusting a role to stay in its lane. It is also why `.harness/**` is in
+ * never_edit: no agent can reach this file, including the one that authors it.
+ */
+async function scribe(task: Task, ctx: Ctx): Promise<void> {
+  const dir = task.worktree;
+  const base = ctx.policy.repo.default_branch;
+  if (!dir) return fail(ctx, task, "nothing to record — the build stage left no worktree");
+
+  const tier = resolveTier(ctx.policy, "scribe", task.task_class, task.ladder_step);
+  if (tier.kind === "escalate") return fail(ctx, task, "scribe exhausted the escalation ladder");
+
+  const events = readAll(ctx.paths.eventsFile);
+  const onRecord = parseDecisions(loadDecisions(ctx.paths.decisionsFile));
+  const changed = touchedPaths(dir, base, task.setup_artifacts);
+
+  const prompt = [
+    `Backlog item ${task.id}: ${task.text}`,
+    `\nAcceptance criteria:\n${task.acceptance.map((a) => `- ${a}`).join("\n")}`,
+    onRecord.length
+      ? `\nAlready on record — do not repeat these, and say so if you overturn one:\n` +
+        onRecord.map((d) => `- ${d.id}: ${d.title}${d.constraint ? ` (constraint: ${d.constraint})` : ""}`).join("\n")
+      : "",
+    `\nFiles in this change: ${changed.join(", ")}`,
+    `\nThe change:\n${branchDiff(dir, base, 12000)}`,
+  ].filter(Boolean).join("\n");
+
+  const span = await runSpan({
+    role: "scribe", traceId: task.id, systemPrompt: SCRIBE, prompt,
+    cwd: dir, tier: tier.tier, ladderStep: task.ladder_step,
+    budgetUsd: budgetLeft(ctx, task), tools: ROLE_TOOLS.scribe,
+    roots: { write: [], read: [dir] },
+    context: brief(ctx, events),
+  }, { policy: ctx.policy, eventsFile: ctx.paths.eventsFile, runner: ctx.runner });
+
+  if (!span.ok) return climb(ctx, task, task.ladder_step, spanFailure(span));
+  const out = extractJson<ScribeOutput>(span.text);
+  if (!out?.title || !out?.why) {
+    return climb(ctx, task, task.ladder_step, "scribe returned no parseable entry");
+  }
+
+  // Claims are checked against the tree before they become memory. Writing a
+  // hallucination into a permanent record is the most expensive kind of mistake
+  // this system can make, because everything downstream then believes it.
+  const claimed = (out.anchors ?? []).map((a) => a.trim()).filter(Boolean);
+  const verified = claimed.filter((a) => changed.includes(a.split(":")[0]));
+  if (claimed.length > 0 && verified.length === 0) {
+    emit(ctx.paths.eventsFile, task.id, "flag", {
+      kind: "unverified_anchors",
+      detail: `scribe named ${JSON.stringify(claimed)}, none of which is in this change`,
+    });
+  }
+  const anchors = verified.length ? verified : changed;
+
+  if (out.contradicts && onRecord.some((d) => d.id === out.contradicts)) {
+    // Visibility, not authority: scribe has no veto, so this is a note a human
+    // and the planner will see, not a block.
+    emit(ctx.paths.eventsFile, task.id, "flag", {
+      kind: "contradiction",
+      detail: `${task.id} overturns ${out.contradicts}: ${out.title}`,
+    });
+  }
+
+  const decision: Decision = {
+    id: task.id, title: out.title, anchors,
+    body: out.why, constraint: out.constraint?.trim() || null,
+  };
+  // A repository can reach this point without the file: `harness init` creates
+  // it, but it can be deleted, and losing a decision because a directory was
+  // missing would be a poor trade.
+  const file = join(dir, relative(ctx.paths.repoRoot, ctx.paths.decisionsFile));
+  mkdirSync(dirname(file), { recursive: true });
+  writeFileSync(file, appendDecision(loadDecisions(file), decision), "utf8");
+
+  emit(ctx.paths.eventsFile, task.id, "decision_written", {
+    title: decision.title, anchors: decision.anchors, constraint: decision.constraint,
+  });
+}
+
 /** Files the builder touched that the plan did not authorise. */
 export function scopeViolations(files: string[], scope: string[]): string[] {
   return files.filter((f) => !scope.some((g) => matchesGlob(f, g)));
@@ -286,7 +395,8 @@ async function integrate(task: Task, ctx: Ctx): Promise<void> {
   // work, and showing only the working tree makes that part look missing.
   const pending = changedFiles(dir).filter((f) => !task.setup_artifacts.includes(f));
   const files = [...new Set([...branchFiles(dir, base), ...pending])];
-  const violations = scopeViolations(files, task.scope);
+  const violations = scopeViolations(files, task.scope)
+    .filter((f) => f !== relative(ctx.paths.repoRoot, ctx.paths.decisionsFile));
   const diff = [
     git(["diff", "--stat", `${base}...HEAD`], dir),
     git(["diff", `${base}...HEAD`], dir).slice(0, 15000),
@@ -310,6 +420,7 @@ async function integrate(task: Task, ctx: Ctx): Promise<void> {
     cwd: dir, tier: tier.tier, ladderStep: task.ladder_step,
     budgetUsd: budgetLeft(ctx, task), tools: ROLE_TOOLS.devops,
     roots: { write: [], read: [dir] },
+    context: brief(ctx, readAll(ctx.paths.eventsFile)),
   }, { policy: ctx.policy, eventsFile: ctx.paths.eventsFile, runner: ctx.runner });
 
   const out = span.ok ? extractJson<DevopsOutput>(span.text) : null;
@@ -317,8 +428,11 @@ async function integrate(task: Task, ctx: Ctx): Promise<void> {
     return climb(ctx, task, task.ladder_step, span.ok ? "devops returned no commit message" : spanFailure(span));
   }
 
-  // Out-of-scope files are never staged; devops has already reported them.
-  const inScope = pending.filter((f) => !violations.includes(f));
+  // Out-of-scope files are never staged; devops has already reported them. The
+  // decision entry is the exception: it is the harness's own writing, and it has
+  // to travel in the same commit as the code it explains.
+  const decisionPath = relative(ctx.paths.repoRoot, ctx.paths.decisionsFile);
+  const inScope = pending.filter((f) => !violations.includes(f) || f === decisionPath);
   const sha = commitAll(dir, out.commit_message, inScope);
   push(dir, branch);
 
@@ -414,6 +528,7 @@ export async function advance(task: Task, ctx: Ctx): Promise<Task> {
     case "queued": await plan(task, ctx); break;
     case "planned": await build(task, ctx); break;
     case "verifying": await verify(task, ctx); break;
+    case "scribing": await scribe(task, ctx); break;
     case "integrating": await integrate(task, ctx); break;
     default: break;
   }

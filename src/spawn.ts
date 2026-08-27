@@ -18,6 +18,8 @@ export type SpanInput = {
   budgetUsd: number;
   tools: ToolPolicy;
   resume?: string;
+  /** The derived project brief. Stable, and therefore cacheable. */
+  context?: string;
   /** What the agent may write, and what it may read. Separate: a builder reads
    *  the main checkout through its symlinked dependencies but must never write
    *  there. */
@@ -53,7 +55,13 @@ export async function runSpan(input: SpanInput, deps: SpanDeps): Promise<SpanRes
 
   const outcome = await deps.runner({
     role: input.role,
-    systemPrompt: input.systemPrompt,
+    // Stable prefix, in order: the role's prompt, then the project brief. The
+    // task-specific text stays in `prompt`, after the cache breakpoint. The
+    // brief carries no timestamps or ids for the same reason — one changing byte
+    // in the prefix invalidates the cache for every agent that follows.
+    systemPrompt: input.context
+      ? `${input.systemPrompt}\n\n---\n\n${input.context}`
+      : input.systemPrompt,
     prompt: input.prompt,
     cwd: input.cwd,
     model: input.tier.model,
@@ -84,6 +92,8 @@ export async function runSpan(input: SpanInput, deps: SpanDeps): Promise<SpanRes
     subtype: outcome.subtype,
     num_turns: outcome.numTurns,
     denials: denials.length,
+    cache_read_tokens: outcome.cacheReadTokens,
+    cache_creation_tokens: outcome.cacheCreationTokens,
     error: outcome.errors[0] ?? null,
     model_usage: outcome.modelUsage,
   });

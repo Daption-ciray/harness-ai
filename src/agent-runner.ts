@@ -34,6 +34,10 @@ export type AgentOutcome = {
   numTurns: number;
   subtype: string;
   errors: string[];
+  /** Prefix-cache hits. Zero across repeated spawns means a silent invalidator
+   *  has crept into the stable prefix, which is expensive and otherwise unseen. */
+  cacheReadTokens: number;
+  cacheCreationTokens: number;
 };
 
 /**
@@ -56,6 +60,7 @@ function describeInput(input: Record<string, unknown>): string {
 const EMPTY: AgentOutcome = {
   ok: false, text: "", sessionId: "", costUsd: 0,
   modelUsage: {}, numTurns: 0, subtype: "no_result", errors: [],
+  cacheReadTokens: 0, cacheCreationTokens: 0,
 };
 
 export const sdkRunner: AgentRunner = async (req) => {
@@ -129,6 +134,9 @@ export const sdkRunner: AgentRunner = async (req) => {
       outcome.modelUsage = message.modelUsage as Record<string, unknown>;
       outcome.numTurns = message.num_turns;
       outcome.subtype = message.subtype;
+      const usage = message.usage as { cache_read_input_tokens?: number; cache_creation_input_tokens?: number };
+      outcome.cacheReadTokens = usage?.cache_read_input_tokens ?? 0;
+      outcome.cacheCreationTokens = usage?.cache_creation_input_tokens ?? 0;
       if (message.subtype === "success") {
         outcome.ok = true;
         outcome.text = message.result;

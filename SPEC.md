@@ -256,39 +256,80 @@ dosya:        yazılmadı
 
 ## 10. Hafıza
 
-Üç katman, sahipleri farklı:
+### `context.md` saklanmıyor — türetiliyor
 
-| Katman | Konum | Sahibi | Doğa |
-|---|---|---|---|
-| `events.jsonl` | sidecar | daemon (mekanik) | ham, append-only, ajan yok |
-| `decisions.md` | **repo** | `scribe` | **neden**, ne değil. Append-only |
-| `context.md` | sidecar | `scribe` | canlı brief, her ajana enjekte |
+Her ajana verilen brief bir **render**, bir dosya değil. Kaynakları:
 
-### `context.md` sert bütçesi (~2k token)
+- **`decisions.md`** — yapısı gereği yalnız **merge olmuş** kararları içerir, çünkü
+  girdi kodla aynı PR'da yolculuk eder
+- **event log** — birden çok görevde tekrar eden blocker'lar
+
+Sonuç: bakımı yapılacak ayrı dosya yok, "scribe bunu ne zaman tazeleyecek" sorusu
+yok, ve brief'in hiç merge olmamış bir değişikliği anlatması **imkânsız**.
+
+Prefix cache'in stabil kalma sebebi de bu: metin ancak bir karar merge olduğunda
+veya bir tuzak eşiği aştığında değişir, her spawn'da değil.
+
+### Bütçe karakterle ölçülür
+
+`memory.context_budget_chars` (varsayılan 8000, kabaca 2k token). Karakterle,
+çünkü **zorlanan şey o**. Token saydığını iddia edip tahmin yürütmek yerine
+ölçtüğünü söylemek daha dürüst.
+
+Bütçe aşılınca **bölüm bütünüyle düşer**, cümle ortadan kesilmez: yarıda biten
+bir brief olgu gibi okunur.
+
+### Çapa ile son kullanma
+
+Her karar dokunduğu dosyaları çapa olarak taşır. Çapaların tümü kaybolduysa girdi
+**depoda kalır** ama ajanlara güncel olgu olarak sunulmaz. Sessizce bayatlamış
+hafıza, hiç hafıza olmamasından kötüdür — çünkü ona inanılır.
+
+### İki farklı kimlik, iki farklı iş
+
+- `findingKey` (dosya + özet) → **durma tespiti**: aynı dosya hakkında aynı şikâyet
+- `summaryKey` (yalnız özet) → **tuzak**: aynı hata **farklı dosyalarda**, farklı
+  görevlerde. Kod tabanının özelliği olması bundan; dosyaya göre anahtarlamak tam
+  da hatırlanmaya değer deseni gizlerdi
+
+### Tek yazar, yapısal olarak
+
+`scribe` girdiyi döndürür, **dosyayı harness yazar**. Aynı gerekçe git'te olduğu
+gibi: rolün şeridinde kalacağına güvenmek yerine yapıyla zorlamak.
+`.harness/**` `never_edit` listesinde — girdiyi yazan rol dahil hiçbir ajan o
+dosyaya erişemiyor.
+
+### İddialar depoya karşı doğrulanır
+
+`scribe`'ın verdiği çapalar değişen dosyalarla kesiştirilir. Hiçbiri tutmuyorsa
+`flag: unverified_anchors` yazılır ve gerçekten değişen dosyalar kullanılır.
+Kalıcı kayda halüsinasyon yazmak bu sistemin yapabileceği en pahalı hata — ondan
+sonrası ona inanır.
+
+### Cache sıralaması — ölçüldü
+
 ```
-repo profili (stack, komutlar)        ~300
-aktif kısıtlar (insan dedi ki)        ~500
-son N kararın özeti                   ~700
-bilinen tuzaklar / tekrar eden hata   ~500
+[stabil]  rol promptu → brief              ← systemPrompt
+[oynak]   görev metni, kriterler, diff     ← prompt
 ```
-Bütçe dolunca `scribe` **silmek zorunda**. En zor iş bu.
 
-### Bayatlama
-Her satır bir dosya çapası taşır (`src/auth/token.ts:44`). Çapa kaybolduysa satır
-otomatik expire. `scribe` yazmadan önce iddiayı repoya karşı doğrular — halüsinasyonu
-kalıcı hafızaya yazmak en pahalı hata tipi.
+Brief'te tarih, task id, sayaç yok. İki ardışık spawn ile ölçüldü:
 
-### Ne zaman koşar
-Sadece karar-şekilli olaylarda: merge onayı, veto gerekçesi, DAG değişimi,
-insanın gelecek işi kısıtlayan sözü. Her tick'te değil.
+```
+spawn 1  created: 5560  read: 10287
+spawn 2  created: 3957  read: 12582
+```
 
-### `decisions.md` kodla birlikte merge olur
-`scribe` karar girdisini merge'den **önce PR'ın içine** yazar:
-- Kod onaylanırken hafıza da onaylanır
-- Uydurma karar satırı review'dan geçemez
-- Post-merge hook, ikinci commit, senkron sorunu yok — atomik
+`span_end` her spawn için `cache_read_tokens` yazar; sıfır kalması sessiz bir
+invalidator'ın işaretidir.
 
----
+### `decisions.md` kodla atomik merge olur
+
+`scribe`, `verified` ile `integrating` arasında koşar ve girdiyi worktree'ye yazar;
+devops onu aynı commit'e alır. Sen kodu onaylarken hafızayı da onaylıyorsun,
+uydurma karar satırı review'dan geçemiyor, ve post-merge hook / senkron sorunu yok.
+
+**Quarantine edilen değişiklik karar yazmaz** — merge olan bir şey yok.
 
 ## 11. `policy.yaml` (repoda, git'te review edilir)
 

@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { emit, isType, readAll, readTrace } from "../src/events.ts";
 import { isAlive, readState, writeState } from "../src/daemon.ts";
+import { describe } from "../src/cli/format.ts";
 import { scratch } from "./helpers.ts";
 
 test("events round-trip through JSONL with their fields intact", () => {
@@ -58,4 +59,19 @@ test("a stale pid does not read as a live daemon", () => {
   assert.equal(isAlive({ ...base, status: "running", pid: 999999 }), false);
   assert.equal(isAlive({ ...base, status: "running", pid: process.pid }), true);
   assert.equal(isAlive({ ...base, status: "stopped", pid: process.pid }), false);
+});
+
+test("a span records what the prefix cache actually did", () => {
+  // Zero cache reads across repeated spawns is the signature of a silent
+  // invalidator in the stable prefix — expensive, and otherwise invisible.
+  const file = join(scratch(), "events.jsonl");
+  emit(file, "bk-1", "span_end", {
+    span_id: "s1", role: "builder", model: "m", effort: "high", ladder_step: 0,
+    cost_usd: 0.1, session_id: "sess", ok: true, subtype: "success",
+    num_turns: 2, denials: 0, error: null, model_usage: {},
+    cache_read_tokens: 12582, cache_creation_tokens: 3957,
+  });
+  const [event] = readAll(file);
+  assert.ok(isType(event, "span_end") && event.cache_read_tokens === 12582);
+  assert.match(describe(event), /12582 cached/);
 });

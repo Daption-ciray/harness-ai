@@ -29,6 +29,8 @@ export function describe(event: HarnessEvent): string {
     case "ladder_advanced": return `rung ${event.from} → ${event.to} · ${event.reason}`;
     case "build_done": return `revision ${event.revision} · ${event.files.length} files changed`;
     case "verified": return `revision ${event.revision} · ${event.verifiers.join(", ")} all passed`;
+    case "decision_written":
+      return `${event.title}${event.constraint ? ` · constraint: ${event.constraint}` : ""}`;
     case "verdict":
       return `${event.role} · revision ${event.revision} · pass` +
         (event.findings.length ? ` · ${event.findings.length} concern(s)` : "") +
@@ -40,7 +42,8 @@ export function describe(event: HarnessEvent): string {
     case "span_start": return `${event.role} · ${event.model} · ${event.effort} · rung ${event.ladder_step}`;
     case "span_end":
       return `${event.role} · ${money(event.cost_usd)} · ${event.num_turns} turns · ` +
-        `${event.ok ? "ok" : event.subtype}${event.denials ? ` · ${event.denials} denied` : ""}`;
+        `${event.ok ? "ok" : event.subtype}${event.denials ? ` · ${event.denials} denied` : ""}` +
+        (event.cache_read_tokens ? ` · ${event.cache_read_tokens} cached` : "");
     case "tool_denied": return `${event.role} · ${event.tool} · ${event.command}`;
     case "veto":
       return `${event.role} · ${event.kind} · revision ${event.revision} · ` +

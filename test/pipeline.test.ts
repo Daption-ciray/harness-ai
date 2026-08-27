@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { scriptedRunner, type ScriptedStep } from "../src/agent-runner.ts";
@@ -7,6 +7,7 @@ import { readAll } from "../src/events.ts";
 import { memoryForge } from "../src/github.ts";
 import { addBacklog, advance, type Ctx } from "../src/pipeline.ts";
 import { projectOne, type Task } from "../src/projection.ts";
+import { appendDecision, parseDecisions } from "../src/memory.ts";
 import { fencedJson, run, toyRepo } from "./helpers.ts";
 
 const PLAN = {
@@ -31,6 +32,14 @@ const SECURITY_BLOCK = {
     file: "src/auth/token.js", line: 3, severity: "blocker",
     summary: "hard-coded API key committed to the repository",
   }],
+};
+
+const SCRIBE_ENTRY = {
+  title: "Greeting uppercases the name at the boundary",
+  why: "Callers were uppercasing at three call sites and disagreeing about locale. Doing it once, where the string is built, removes the disagreement.",
+  anchors: ["src/greet.js"],
+  constraint: null,
+  contradicts: null,
 };
 
 const DEVOPS_OK = {
@@ -76,6 +85,7 @@ const HAPPY: ScriptedStep[] = [
   { role: "builder", costUsd: 0.9, act: writeGreet },
   { role: "adversary", text: fencedJson(PASS), costUsd: 0.1 },
   { role: "review", text: fencedJson(PASS), costUsd: 0.1 },
+  { role: "scribe", text: fencedJson(SCRIBE_ENTRY), costUsd: 0.05 },
   { role: "devops", text: fencedJson(DEVOPS_OK), costUsd: 0.2 },
 ];
 
@@ -88,7 +98,7 @@ test("the whole chain runs from backlog item to pull request, with no model and 
 
   assert.equal(task.state, "escalated");
   assert.equal(task.revision, 1);
-  assert.equal(task.cost_usd, 1.5);
+  assert.equal(task.cost_usd, 1.55);
   assert.equal(h.runner.remaining(), 0, "every scripted step was consumed by the role it was written for");
 
   assert.equal(h.forge.prs.length, 1);
@@ -112,8 +122,9 @@ test("the harness's own setup artifacts are never committed and never blamed on 
   assert.deepEqual(planned.setup_artifacts, ["node_modules"]);
 
   const task = await h.runToEnd();
-  const committed = run(task.worktree as string, "show", "--name-only", "--format=", "HEAD");
-  assert.equal(committed, "src/greet.js");
+  const committed = run(task.worktree as string, "show", "--name-only", "--format=", "HEAD").split("\n");
+  // The decision entry rides along on purpose: it explains the code it merges with.
+  assert.deepEqual(committed.sort(), [".harness/decisions.md", "src/greet.js"]);
   assert.equal(h.forge.prs[0].isDraft, false, "a setup artifact is not a scope violation");
 });
 
@@ -143,12 +154,14 @@ test("a file outside the declared scope is reported and never staged", async () 
     },
     { role: "adversary", text: fencedJson(PASS) },
     { role: "review", text: fencedJson(PASS) },
+    { role: "scribe", text: fencedJson(SCRIBE_ENTRY) },
     { role: "devops", text: fencedJson({ ...DEVOPS_OK, ready: true }) },
   ]);
   const task = await h.runToEnd();
 
-  const committed = run(task.worktree as string, "show", "--name-only", "--format=", "HEAD");
-  assert.equal(committed, "src/greet.js", "the out-of-scope file is left out of the commit");
+  const committed = run(task.worktree as string, "show", "--name-only", "--format=", "HEAD").split("\n");
+  assert.ok(!committed.includes("README.md"), "the out-of-scope file is left out of the commit");
+  assert.ok(committed.includes("src/greet.js"));
   assert.equal(h.forge.prs[0].isDraft, true, "a scope violation parks the pull request");
   assert.match(h.forge.prs[0].body, /outside declared scope: README\.md/);
   assert.deepEqual(h.forge.prs[0].labels, ["harness", "blocked:devops"]);
@@ -247,6 +260,7 @@ test("untrusted text reaches the agent fenced as data, not as instructions", asy
       return {
         ok: true, text: fencedJson(PLAN), sessionId: "s", costUsd: 0,
         modelUsage: {}, numTurns: 1, subtype: "success", errors: [],
+        cacheReadTokens: 0, cacheCreationTokens: 0,
       };
     },
   };
@@ -268,6 +282,7 @@ test("a veto sends the work back to the builder and the next revision is judged 
     { role: "builder", act: writeGreet },
     { role: "adversary", text: fencedJson(PASS) },
     { role: "review", text: fencedJson(PASS) },
+    { role: "scribe", text: fencedJson(SCRIBE_ENTRY) },
     { role: "devops", text: fencedJson(DEVOPS_OK) },
   ]);
   const task = await h.runToEnd();
@@ -293,6 +308,7 @@ test("the builder is told exactly which blockers to resolve", async () => {
     { role: "builder", act: writeGreet },
     { role: "adversary", text: fencedJson(PASS) },
     { role: "review", text: fencedJson(PASS) },
+    { role: "scribe", text: fencedJson(SCRIBE_ENTRY) },
     { role: "devops", text: fencedJson(DEVOPS_OK) },
   ]);
   const inner = h.ctx.runner;
@@ -332,6 +348,7 @@ test("a block with no blocker is not a block", async () => {
     { role: "builder", act: writeGreet },
     { role: "adversary", text: fencedJson({ verdict: "block", note: "vibes", findings: [] }) },
     { role: "review", text: fencedJson(PASS) },
+    { role: "scribe", text: fencedJson(SCRIBE_ENTRY) },
     { role: "devops", text: fencedJson(DEVOPS_OK) },
   ]);
   const task = await h.runToEnd();
@@ -348,6 +365,7 @@ test("verifier concerns travel to the pull request, blockers having been resolve
     { role: "builder", act: writeGreet },
     { role: "adversary", text: fencedJson(PASS_WITH_CONCERN) },
     { role: "review", text: fencedJson(PASS) },
+    { role: "scribe", text: fencedJson(SCRIBE_ENTRY) },
     { role: "devops", text: fencedJson({ ...DEVOPS_OK, concerns: ["devops had a thought"] }) },
   ]);
   await h.runToEnd();
@@ -363,6 +381,7 @@ test("every required verifier reports before the change reaches devops", async (
     { role: "builder", act: writeGreet },
     { role: "adversary", text: fencedJson(PASS) },
     { role: "review", text: fencedJson(PASS) },
+    { role: "scribe", text: fencedJson(SCRIBE_ENTRY) },
     { role: "devops", text: fencedJson(DEVOPS_OK) },
   ]);
   await h.runToEnd();
@@ -371,7 +390,7 @@ test("every required verifier reports before the change reaches devops", async (
   const roles = readAll(h.paths.eventsFile)
     .filter((e) => e.type === "span_start")
     .map((e) => (e as { role: string }).role);
-  assert.deepEqual(roles, ["planner", "builder", "adversary", "review", "devops"]);
+  assert.deepEqual(roles, ["planner", "builder", "adversary", "review", "scribe", "devops"]);
   assert.ok(order.indexOf("verified") < order.lastIndexOf("span_start"),
     "devops runs only after verification passed");
 });
@@ -390,6 +409,7 @@ test("touching auth paths is what pulls security into the task at all", async ()
     { role: "security", text: fencedJson(PASS) },
     { role: "adversary", text: fencedJson(PASS) },
     { role: "review", text: fencedJson(PASS) },
+    { role: "scribe", text: fencedJson(SCRIBE_ENTRY) },
     { role: "devops", text: fencedJson(DEVOPS_OK) },
   ]);
   const task = await h.runToEnd();
@@ -407,13 +427,14 @@ test("the lease puts the routed specialist at the front of the queue", async () 
     { role: "security", text: fencedJson(PASS) },
     { role: "adversary", text: fencedJson(PASS) },
     { role: "review", text: fencedJson(PASS) },
+    { role: "scribe", text: fencedJson(SCRIBE_ENTRY) },
     { role: "devops", text: fencedJson(DEVOPS_OK) },
   ]);
   await h.runToEnd();
   const roles = readAll(h.paths.eventsFile)
     .filter((e) => e.type === "span_start")
     .map((e) => (e as { role: string }).role);
-  assert.deepEqual(roles, ["planner", "builder", "security", "adversary", "review", "devops"]);
+  assert.deepEqual(roles, ["planner", "builder", "security", "adversary", "review", "scribe", "devops"]);
 });
 
 test("a hard veto quarantines the change and still puts it in front of a human", async () => {
@@ -467,6 +488,7 @@ test("a denied write is recorded against the role that attempted it", async () =
     },
     { role: "adversary", text: fencedJson(PASS) },
     { role: "review", text: fencedJson(PASS) },
+    { role: "scribe", text: fencedJson(SCRIBE_ENTRY) },
     { role: "devops", text: fencedJson(DEVOPS_OK) },
   ]);
   await h.runToEnd();
@@ -476,4 +498,94 @@ test("a denied write is recorded against the role that attempted it", async () =
   assert.deepEqual(denied.map((e) => (e as { tool: string }).tool), ["Write", "Edit", "Read"]);
   assert.ok(denied.every((e) => (e as { role: string }).role === "builder"));
   assert.match((denied[1] as { reason: string }).reason, /never_edit/);
+});
+
+test("the decision entry merges in the same commit as the code it explains", async () => {
+  const h = harness(HAPPY);
+  const task = await h.runToEnd();
+
+  const decisions = readFileSync(join(task.worktree as string, ".harness/decisions.md"), "utf8");
+  const parsed = parseDecisions(decisions);
+  assert.equal(parsed.length, 1);
+  assert.equal(parsed[0].id, "bk-1");
+  assert.deepEqual(parsed[0].anchors, ["src/greet.js"]);
+  assert.match(parsed[0].body, /disagreeing about locale/);
+
+  const committed = run(task.worktree as string, "show", "--name-only", "--format=", "HEAD").split("\n");
+  assert.ok(committed.includes(".harness/decisions.md"),
+    "approving the code approves the memory, in one commit");
+});
+
+test("an anchor that is not in the change is discarded and flagged, not recorded", async () => {
+  // Writing a hallucination into a permanent record is the most expensive
+  // mistake available here: everything downstream then believes it.
+  const h = harness([
+    ...HAPPY.slice(0, 4),
+    { role: "scribe", text: fencedJson({ ...SCRIBE_ENTRY, anchors: ["src/imaginary.ts"] }) },
+    { role: "devops", text: fencedJson(DEVOPS_OK) },
+  ]);
+  const task = await h.runToEnd();
+
+  const flags = readAll(h.paths.eventsFile).filter((e) => e.type === "flag");
+  assert.equal(flags.length, 1);
+  assert.equal((flags[0] as { kind: string }).kind, "unverified_anchors");
+
+  const parsed = parseDecisions(readFileSync(join(task.worktree as string, ".harness/decisions.md"), "utf8"));
+  assert.ok(!parsed[0].anchors.includes("src/imaginary.ts"));
+  assert.ok(parsed[0].anchors.includes("src/greet.js"), "it falls back to what actually changed");
+});
+
+test("scribe can flag a contradiction but cannot block anything", async () => {
+  const h = harness([
+    ...HAPPY.slice(0, 4),
+    { role: "scribe", text: fencedJson({ ...SCRIBE_ENTRY, contradicts: "bk-0" }) },
+    { role: "devops", text: fencedJson(DEVOPS_OK) },
+  ]);
+  // Seed a decision for the new one to overturn.
+  const file = join(h.paths.harnessDir, "decisions.md");
+  writeFileSync(file, appendDecision(readFileSync(file, "utf8"), {
+    id: "bk-0", title: "Greeting is left as written", anchors: [],
+    body: "Callers were expected to case it themselves.", constraint: null,
+  }), "utf8");
+
+  const task = await h.runToEnd();
+  const flags = readAll(h.paths.eventsFile).filter((e) => e.type === "flag");
+  assert.ok(flags.some((f) => (f as { kind: string }).kind === "contradiction"));
+  assert.equal(task.state, "escalated", "a flag is visibility, not authority");
+});
+
+test("a quarantined change records no decision - nothing merged", async () => {
+  const h = harness([
+    { role: "planner", text: fencedJson(AUTH_PLAN) },
+    { role: "builder", act: writeAuth },
+    { role: "security", text: fencedJson(SECURITY_BLOCK) },
+    { role: "devops", text: fencedJson(DEVOPS_OK) },
+  ]);
+  const task = await h.runToEnd();
+  assert.equal(task.quarantined, true);
+  assert.equal(h.runner.remaining(), 0, "scribe never ran");
+  assert.equal(readAll(h.paths.eventsFile).filter((e) => e.type === "decision_written").length, 0);
+});
+
+test("every agent is handed the same brief, ahead of its task-specific prompt", async () => {
+  const seen = new Map<string, { system: string; prompt: string }>();
+  const h = harness(HAPPY);
+  const inner = h.ctx.runner;
+  h.ctx.runner = async (req) => {
+    seen.set(req.role, { system: req.systemPrompt, prompt: req.prompt });
+    return inner(req);
+  };
+  await h.runToEnd();
+
+  const briefs = [...seen.values()].map((s) => s.system.split("\n\n---\n\n").at(-1));
+  assert.equal(new Set(briefs).size, 1, "one brief, byte-identical for every role");
+  assert.match(briefs[0] as string, /# Project brief/);
+
+  for (const [role, { system, prompt }] of seen) {
+    assert.ok(system.includes("# Project brief"), `${role} is given the brief`);
+    assert.ok(!prompt.includes("# Project brief"),
+      `${role}'s brief sits in the stable prefix, not in the volatile task text`);
+  }
+  assert.ok(!(seen.get("builder") as { system: string }).system.match(/\d{4}-\d{2}-\d{2}/),
+    "nothing in the cached prefix changes per spawn");
 });

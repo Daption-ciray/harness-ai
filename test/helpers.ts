@@ -1,5 +1,6 @@
 import { execFileSync } from "node:child_process";
-import { cpSync, mkdtempSync, mkdirSync, copyFileSync } from "node:fs";
+import { cpSync, mkdtempSync, mkdirSync, copyFileSync, writeFileSync } from "node:fs";
+import { decisionsHeader } from "../src/memory.ts";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { resolvePaths, type Paths } from "../src/paths.ts";
@@ -41,6 +42,10 @@ export function toyRepo(opts: { withHarness?: boolean } = {}): { dir: string; pa
   if (opts.withHarness !== false) {
     mkdirSync(paths.harnessDir, { recursive: true });
     copyFileSync(join(import.meta.dirname, "../src/default-policy.yaml"), paths.policyFile);
+    writeFileSync(paths.decisionsFile, decisionsHeader(), "utf8");
+    run(dir, "add", "-A");
+    run(dir, "commit", "-qm", "harness init");
+    run(dir, "push", "-q", "origin", "main");
   }
   const policy = opts.withHarness === false
     ? (undefined as unknown as Policy)

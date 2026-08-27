@@ -98,6 +98,14 @@ merge:
     - acceptance_unmet: any
     - path_touched: "SPEC.md|.harness/**" # may propose, may not self-merge
 
+memory:
+  # The brief is prepended to every agent, so anything stale in it is paid for on
+  # every spawn. Measured in characters because that is what is enforced;
+  # roughly four to a token, so this is about 2k tokens.
+  context_budget_chars: 8000
+  decisions_in_context: 8
+  pitfall_threshold: 3
+
 sensors:
   broken_tests: { enabled: true,  every: "15m", origin: trusted }
   open_issues:  { enabled: true,  every: "30m", origin: untrusted }

@@ -129,6 +129,25 @@ export const PolicySchema = z.object({
     escalate_when: z.array(EscalateRule).default([]),
   }),
 
+  /**
+   * Additive sections default as a whole, so a policy written before this
+   * existed keeps loading. A schema change that invalidates every deployed
+   * config is a migration, and an additive field should never be one.
+   */
+  memory: z.object({
+    /**
+     * Enforced in characters because that is what is actually measured. Roughly
+     * four characters to a token, so 8000 is about 2k tokens — a brief, not an
+     * archive. The point of the cap is that this text is prepended to EVERY
+     * agent, so anything stale in here is paid for on every spawn.
+     */
+    context_budget_chars: z.number().int().positive().default(8000),
+    /** How many recent decisions the brief carries. Older ones stay in the repo. */
+    decisions_in_context: z.number().int().positive().default(8),
+    /** A finding seen in this many distinct tasks becomes a standing pitfall. */
+    pitfall_threshold: z.number().int().min(2).default(3),
+  }).prefault({}),
+
   sensors: z.record(z.string(), Sensor),
 
   permissions: z.object({

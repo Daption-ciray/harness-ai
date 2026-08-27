@@ -1,17 +1,8 @@
 import { copyFileSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { loadPolicy } from "../policy.ts";
+import { decisionsHeader } from "../memory.ts";
 import { originUrl, resolvePaths } from "../paths.ts";
-
-const DECISIONS_HEADER = `# Decisions
-
-Append-only. Written by \`scribe\`, one entry per merged change, in the same PR as
-the code it describes — so approving the code approves the memory.
-
-Each entry records **why**, not what. The diff already records what.
-
----
-`;
 
 export function init(cwd = process.cwd(), force = false): string[] {
   const paths = resolvePaths(cwd);
@@ -27,7 +18,7 @@ export function init(cwd = process.cwd(), force = false): string[] {
   }
 
   if (!existsSync(paths.decisionsFile)) {
-    writeFileSync(paths.decisionsFile, DECISIONS_HEADER, "utf8");
+    writeFileSync(paths.decisionsFile, decisionsHeader(), "utf8");
     out.push(`wrote   ${paths.decisionsFile}`);
   }
 
