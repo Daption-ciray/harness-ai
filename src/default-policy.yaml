@@ -1,0 +1,115 @@
+# harness-ai policy. Hand-edited, reviewed in git, and off-limits to the agents
+# (see permissions.never_edit) so the harness cannot loosen its own guardrails.
+version: 1
+
+repo: # `scout` fills these in; correct them by hand when it guesses wrong
+  default_branch: main
+  test_cmd: "npm test"
+  build_cmd: "npm run build"
+  lint_cmd: "npm run lint"
+
+runtime:
+  sandbox: none # none | container - container is post-MVP, the field is here so
+                # switching later is a config change, not an architecture change
+  max_concurrent_builders: 4
+  tick_seconds: 60
+  lease_ttl_seconds: 900
+
+# Model and effort per role. Effort is the primary knob, model the secondary one.
+roles:
+  planner:   { model: claude-opus-5,     effort: high,   maxTurns: 20 }
+  builder:   { model: claude-opus-5,     effort: xhigh,  maxTurns: 40 }
+  adversary: { model: claude-opus-5,     effort: high,   maxTurns: 25 }
+  review:    { model: claude-opus-5,     effort: medium, maxTurns: 15, tools: [] }
+  security:  { model: claude-opus-5,     effort: xhigh,  maxTurns: 20, never_downgrade: true, preempt: true }
+  devops:    { model: claude-opus-5,     effort: medium, maxTurns: 15 }
+  scribe:    { model: claude-haiku-4-5,  effort: low,    maxTurns: 6,  tools: [] }
+
+# Start cheap, climb on failure. Most tasks finish on the first rung.
+escalation_ladder:
+  - { model: claude-sonnet-5, effort: medium }
+  - { model: claude-opus-5,   effort: high }
+  - { model: claude-opus-5,   effort: xhigh, include_adversary_report: true }
+  - { escalate_to_human: true }
+
+# Which rung each class starts on. A script learns real success rates from
+# events.jsonl and proposes changes here; it never applies them itself.
+ladder_start:
+  trivial: 0
+  routine: 0
+  risky: 1 # risky never starts on sonnet
+
+# Classification is deterministic - file globs, diff size, backlog source, retry
+# count. No model is asked which model to use; the decision itself must be free.
+task_class:
+  risky:
+    match:
+      - "**/auth/**"
+      - "**/crypto/**"
+      - "**/*migration*"
+      - "package.json"
+      - ".github/workflows/**"
+      - "**/Dockerfile"
+      - "**/*secret*"
+    source: [cve_scan]
+    override: { effort: max }
+  trivial:
+    match: ["**/*.md", "**/*.test.*"]
+    source: [todo_harvest]
+    max_files: 2
+    override: { model: claude-sonnet-5, effort: low }
+  routine: {}
+
+# (domain, severity) -> lease holder. First match wins; `default` is the fallback.
+routing:
+  - { match: "**/auth/**|**/crypto/**|**/*secret*", owner: security }
+  - { match: "**/*migration*", owner: security }
+  - { match: "**/api/**", owner: review }
+  - { on: ci_result, owner: devops }
+  - { default: true, owner: planner }
+
+veto:
+  security:  { type: hard }
+  review:    { type: soft, max_rounds: 2 }
+  adversary: { type: soft, max_rounds: 3 }
+  devops:    { type: soft, max_rounds: 3 }
+
+budget:
+  per_task_usd: 2.00
+  per_day_usd: 25.00
+  on_exceed: pause
+
+merge:
+  auto: false # Phase 7 turns this on; until then everything escalates
+  max_pending_escalated: 3
+  escalate_when:
+    - first_n_merges: 20 # autonomy is earned, not granted
+    - origin: untrusted # no exceptions - this is the prompt-injection cut-off
+    - task_class: risky
+    - security_finding: any
+    - review_rounds: ">=2"
+    - diff_files: ">15"
+    - public_api_change: true
+    - acceptance_unmet: any
+    - path_touched: "SPEC.md|.harness/**" # may propose, may not self-merge
+
+sensors:
+  broken_tests: { enabled: true,  every: "15m", origin: trusted }
+  open_issues:  { enabled: true,  every: "30m", origin: untrusted }
+  todo_harvest: { enabled: false, every: "24h", origin: trusted }
+  cve_scan:     { enabled: false, every: "24h", origin: trusted }
+
+permissions:
+  deny_all_roles:
+    - "Bash(git *)"
+    - "Bash(gh *)"
+    - "Bash(rm -rf *)"
+  git_allowed_for: [devops] # single writer for git/CI, the way scribe is for memory
+  never_edit:
+    - ".harness/policy.yaml"
+    - ".github/workflows/**"
+  write_scope: repo_only
+  network_allowlist:
+    - registry.npmjs.org
+    - github.com
+    - api.anthropic.com

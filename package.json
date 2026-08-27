@@ -1,0 +1,27 @@
+{
+  "name": "harness-ai",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "description": "Multi-agent, always-on development harness that plugs into any git repo",
+  "engines": {
+    "node": ">=22.18"
+  },
+  "bin": {
+    "harness": "./bin/harness.ts"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.ts",
+    "typecheck": "tsc --noEmit",
+    "harness": "node bin/harness.ts"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.3.247",
+    "yaml": "^2.9.0",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/node": "^26.4.0",
+    "typescript": "^7.0.2"
+  }
+}
