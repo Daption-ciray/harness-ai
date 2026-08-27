@@ -4,6 +4,7 @@ import { setPaused, start, stop } from "../src/daemon.ts";
 import { backlogAdd, runOnce, tasks } from "../src/cli/backlog.ts";
 import { init } from "../src/cli/init.ts";
 import { status } from "../src/cli/status.ts";
+import { version } from "../src/cli/version.ts";
 
 const USAGE = `harness — multi-agent development harness
 
@@ -15,6 +16,7 @@ const USAGE = `harness — multi-agent development harness
   harness backlog add "<text>"  queue a task (origin: trusted)
   harness tasks                 list every task and its state
   harness run [<id>]            advance one task by one stage, in the foreground
+  harness version               display the CLI version
 `;
 
 const { positionals, values } = parseArgs({
@@ -50,6 +52,8 @@ try {
     console.log(await runOnce(cwd, rest[0]));
   } else if (cmd === "backlog" && rest[0] === "add") {
     console.log(backlogAdd(cwd, rest.slice(1).join(" "), values.untrusted ? "untrusted" : "trusted"));
+  } else if (cmd === "version") {
+    console.log(version(cwd));
   } else {
     console.error(`unknown command: ${cmd}\n\n${USAGE}`);
     process.exit(2);
