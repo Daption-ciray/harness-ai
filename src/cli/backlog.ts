@@ -75,6 +75,15 @@ export function cancel(cwd: string, id: string, reason: string): string {
   return `${id}  ${task.state} → failed  (${reason})`;
 }
 
+/**
+ * A sensor task carries its failing output — hundreds of lines of stack trace.
+ * Printed whole it buries the list it is supposed to be an entry in.
+ */
+function oneLine(text: string, width: number): string {
+  const first = text.split(/\r?\n/)[0].trim();
+  return first.length > width ? `${first.slice(0, width - 1)}…` : first;
+}
+
 export function tasks(cwd: string, json = false): string {
   const all = listTasks(readAll(resolvePaths(cwd).eventsFile));
   if (json) {
@@ -87,7 +96,10 @@ export function tasks(cwd: string, json = false): string {
   return all.map((t) => [
     t.id.padEnd(8), t.state.padEnd(10), t.task_class.padEnd(8), t.origin.padEnd(9),
     money(t.cost_usd).padEnd(9), t.pr ? `#${t.pr.number}` : "  -",
-    ` ${t.text}`, t.last_error ? `  ← ${t.last_error}` : "",
+    // First line only: a sensor task carries its failing output, and dumping
+    // four hundred lines of it makes the list unreadable.
+    ` ${oneLine(t.text, 62)}`,
+    t.last_error ? `  ← ${oneLine(t.last_error, 60)}` : "",
   ].join(" ")).join("\n");
 }
 

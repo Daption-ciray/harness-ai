@@ -658,3 +658,19 @@ test("every agent is handed the same brief, ahead of its task-specific prompt", 
   assert.ok(!(seen.get("builder") as { system: string }).system.match(/\d{4}-\d{2}-\d{2}/),
     "nothing in the cached prefix changes per spawn");
 });
+
+test("the task list stays readable when a task carries a wall of output", async () => {
+  // A sensor task carries the failing test output. Printed whole it buried the
+  // list under four hundred lines of stack trace.
+  const { dir, paths } = toyRepo();
+  const { addBacklog: add } = await import("../src/pipeline.ts");
+  const { tasks: render } = await import("../src/cli/backlog.ts");
+  add(paths.eventsFile, "bk-1", {
+    text: `The test suite is failing.\n\n${"stack frame\n".repeat(400)}`,
+    origin: "trusted", source: "broken_tests", fingerprint: "broken_tests",
+  });
+  const lines = render(dir).split("\n");
+  assert.equal(lines.length, 1, "one task, one line");
+  assert.ok(lines[0].length < 160, `line was ${lines[0].length} characters`);
+  assert.match(lines[0], /The test suite is failing\./);
+});
