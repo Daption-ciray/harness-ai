@@ -5,6 +5,7 @@ import { test } from "node:test";
 import { scriptedRunner, type ScriptedStep } from "../src/agent-runner.ts";
 import { readAll } from "../src/events.ts";
 import { memoryForge } from "../src/github.ts";
+import { hostExecutor } from "../src/exec.ts";
 import { addBacklog, advance, type Ctx } from "../src/pipeline.ts";
 import { projectOne, type Task } from "../src/projection.ts";
 import { appendDecision, parseDecisions } from "../src/memory.ts";
@@ -58,7 +59,7 @@ function harness(steps: ScriptedStep[]) {
   const { dir, paths, policy } = toyRepo();
   const forge = memoryForge();
   const runner = scriptedRunner(steps);
-  const ctx: Ctx = { policy, paths, runner, forge };
+  const ctx: Ctx = { policy, paths, runner, forge, exec: hostExecutor() };
   addBacklog(paths.eventsFile, "bk-1", { text: "uppercase the greeting", origin: "trusted", source: "human" });
 
   const load = (): Task => projectOne(readAll(paths.eventsFile), "bk-1") as Task;
@@ -322,7 +323,7 @@ test("untrusted text reaches the agent fenced as data, not as instructions", asy
   const { paths, policy } = toyRepo();
   let seen = "";
   const ctx: Ctx = {
-    policy, paths, forge: memoryForge(),
+    policy, paths, forge: memoryForge(), exec: hostExecutor(),
     runner: async (req) => {
       seen = req.prompt;
       return {

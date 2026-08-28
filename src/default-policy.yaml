@@ -12,10 +12,20 @@ repo: # `scout` fills these in; correct them by hand when it guesses wrong
   worktree_setup_cmd: "ln -sfn $HARNESS_REPO_ROOT/node_modules node_modules"
 
 runtime:
-  # os  = the Claude Code sandbox (macOS Seatbelt, Linux/WSL2). Kernel-level, so
-  #       it holds over Bash and every child process, which no regex can.
-  # none = explicit opt-out, for a platform where the sandbox cannot start.
+  # container = `docker sandbox`. The repository's own commands — worktree setup,
+  #             the test sensor, and the test run before an automatic merge —
+  #             execute in a VM-backed sandbox with default-deny egress. That
+  #             last one runs code the agents just wrote, moments before it
+  #             reaches the default branch, and it is the only place the OS
+  #             sandbox does not cover: that one guards the agents' tool use,
+  #             not the harness's own subprocesses.
+  #             Needs Docker running, and an image that carries this repo's
+  #             toolchain — see runtime.sandbox_image.
+  # os        = the Claude Code sandbox (macOS Seatbelt, Linux/WSL2). Kernel
+  #             level over the agents' Bash and every child process.
+  # none      = explicit opt-out.
   sandbox: os
+  # sandbox_image: node:24    # when the default agent image cannot build this repo
   max_concurrent_builders: 4
   tick_seconds: 60
   lease_ttl_seconds: 900

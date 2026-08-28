@@ -1,10 +1,9 @@
-import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { cleanEnv } from "./env.ts";
 import { dirname } from "node:path";
 import { DAEMON_TRACE, emit, readAll } from "./events.ts";
 import { sdkRunner, type AgentRunner } from "./agent-runner.ts";
 import { ghForge, type Forge } from "./github.ts";
+import { ensureSandbox, executorFor, preflight, verifyToolchain, type CommandExecutor } from "./exec.ts";
 import { LockBusy, withLock } from "./lock.ts";
 import { listTasks, spendSince } from "./projection.ts";
 import { removeWorktree } from "./git.ts";
@@ -66,7 +65,10 @@ export function requireOrigin(paths: Paths): string {
   return url;
 }
 
-export type Tick = { policy: Policy; paths: Paths; state: State; count: number; runner: AgentRunner; forge: Forge };
+export type Tick = {
+  policy: Policy; paths: Paths; state: State; count: number;
+  runner: AgentRunner; forge: Forge; exec: CommandExecutor;
+};
 
 /**
  * One scheduler pass: advance a single task by one stage. Phase 1 is
@@ -135,17 +137,10 @@ const MERGEABILITY_TIMEOUT_MS = 30 * 60_000;
 function branchTestsPass(ctx: Tick, dir: string): { ok: boolean; detail: string } {
   const command = ctx.policy.repo.test_cmd;
   if (!command) return { ok: false, detail: "no test command configured; refusing to merge unverified" };
-  try {
-    execFileSync(command, {
-      cwd: dir, shell: true, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"],
-      env: cleanEnv(), timeout: 15 * 60_000,
-    });
-    return { ok: true, detail: "green" };
-  } catch (e) {
-    const err = e as { signal?: string; stdout?: string; stderr?: string };
-    if (err.signal === "SIGTERM") return { ok: false, detail: "the test command timed out" };
-    return { ok: false, detail: `tests failed: ${`${err.stdout ?? ""}${err.stderr ?? ""}`.trim().slice(-300)}` };
-  }
+  const result = ctx.exec({ cwd: dir, command, timeoutMs: 15 * 60_000 });
+  if (result.ok) return { ok: true, detail: "green" };
+  if (result.timedOut) return { ok: false, detail: "the test command timed out" };
+  return { ok: false, detail: `tests failed: ${result.output.slice(-300)}` };
 }
 
 /**
@@ -242,7 +237,7 @@ export async function tick(ctx: Tick): Promise<void> {
     return;
   }
 
-  runSensors({ policy: ctx.policy, paths: ctx.paths, forge: ctx.forge }, Date.now());
+  runSensors({ policy: ctx.policy, paths: ctx.paths, forge: ctx.forge, exec: ctx.exec }, Date.now());
 
   let tasks = listTasks(readAll(ctx.paths.eventsFile));
   reconcilePullRequests(ctx, tasks);
@@ -269,7 +264,9 @@ export async function tick(ctx: Tick): Promise<void> {
     Number(b.source === "human") - Number(a.source === "human")
     || a.created_at.localeCompare(b.created_at))[0];
   if (!next) return;
-  await advance(next, { policy: ctx.policy, paths: ctx.paths, runner: ctx.runner, forge: ctx.forge });
+  await advance(next, {
+    policy: ctx.policy, paths: ctx.paths, runner: ctx.runner, forge: ctx.forge, exec: ctx.exec,
+  });
 }
 
 export async function start(cwd = process.cwd()): Promise<void> {
@@ -282,6 +279,17 @@ export async function start(cwd = process.cwd()): Promise<void> {
   }
 
   let policy = loadPolicy(paths.policyFile);
+
+  // Container isolation that silently falls back to the host is worse than not
+  // offering it: the operator believes in a boundary that is not there.
+  const check = preflight(policy, paths);
+  if (!check.ok) throw new Error(check.detail);
+  const sandbox = ensureSandbox(policy, paths);
+  if (!sandbox.ok) throw new Error(sandbox.detail);
+  const toolchain = verifyToolchain(policy, paths);
+  if (!toolchain.ok) throw new Error(toolchain.detail);
+  console.log(`isolation · ${sandbox.detail}`);
+
   for (const dir of [paths.sidecar, paths.worktreesDir]) {
     mkdirSync(dir, { recursive: true });
   }
@@ -312,7 +320,7 @@ export async function start(cwd = process.cwd()): Promise<void> {
     busy = true;
     // The lock, not `busy`, is what keeps a CLI invocation out; `busy` only
     // stops this daemon from overlapping itself when a stage outlives a tick.
-    void withLock(paths.lockFile, "harness daemon", () => tick({ policy, paths, state, count, runner: sdkRunner, forge: ghForge }))
+    void withLock(paths.lockFile, "harness daemon", () => tick({ policy, paths, state, count, runner: sdkRunner, forge: ghForge, exec: executorFor(policy, paths) }))
       .catch((e) => {
         if (!(e instanceof LockBusy)) console.error(`tick failed: ${(e as Error).message}`);
       })

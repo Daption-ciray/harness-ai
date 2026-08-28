@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
 import type { Origin } from "./domain.ts";
-import { cleanEnv } from "./env.ts";
+import type { CommandExecutor } from "./exec.ts";
 import { emit, readAll, type HarnessEvent } from "./events.ts";
 import type { Forge } from "./github.ts";
 import type { Paths } from "./paths.ts";
@@ -26,6 +26,7 @@ export type SensorContext = {
   policy: Policy;
   paths: Paths;
   forge: Forge;
+  exec: CommandExecutor;
 };
 
 export type Sensor = {
@@ -45,24 +46,16 @@ export function parseCadence(text: string): number {
 const brokenTests: Sensor = {
   name: "broken_tests",
   origin: "trusted",
-  run({ policy, paths }) {
+  run({ policy, paths, exec }) {
     if (!policy.repo.test_cmd) return { candidates: [], detail: "no test command configured" };
-    try {
-      execFileSync(policy.repo.test_cmd, {
-        cwd: paths.repoRoot, shell: true, encoding: "utf8",
-        stdio: ["ignore", "pipe", "pipe"],
-        // The repository's own command, run in its own environment.
-        env: cleanEnv(),
-        // An always-on loop cannot afford to block on a hanging suite.
-        timeout: 10 * 60_000,
-      });
-      return { candidates: [], detail: "green" };
-    } catch (e) {
-      const err = e as { stdout?: string; stderr?: string; signal?: string };
-      if (err.signal === "SIGTERM") {
-        return { candidates: [], detail: "test command timed out; not queueing a task for it" };
-      }
-      const output = `${err.stdout ?? ""}\n${err.stderr ?? ""}`.trim().slice(-4000);
+    // An always-on loop cannot afford to block on a hanging suite.
+    const result = exec({ cwd: paths.repoRoot, command: policy.repo.test_cmd, timeoutMs: 10 * 60_000 });
+    if (result.ok) return { candidates: [], detail: "green" };
+    if (result.timedOut) {
+      return { candidates: [], detail: "test command timed out; not queueing a task for it" };
+    }
+    {
+      const output = result.output.slice(-4000);
       return {
         detail: "red",
         candidates: [{
@@ -126,15 +119,11 @@ const todoHarvest: Sensor = {
 const cveScan: Sensor = {
   name: "cve_scan",
   origin: "trusted",
-  run({ paths }) {
-    try {
-      execFileSync("npm", ["audit", "--audit-level=high"], {
-        cwd: paths.repoRoot, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"],
-        env: cleanEnv(), timeout: 5 * 60_000,
-      });
-      return { candidates: [], detail: "clean" };
-    } catch (e) {
-      const output = `${(e as { stdout?: string }).stdout ?? ""}`.trim().slice(-3000);
+  run({ paths, exec }) {
+    const result = exec({ cwd: paths.repoRoot, command: "npm audit --audit-level=high", timeoutMs: 5 * 60_000 });
+    if (result.ok) return { candidates: [], detail: "clean" };
+    {
+      const output = result.output.trim().slice(-3000);
       if (!output) return { candidates: [], detail: "npm audit unavailable here" };
       return {
         detail: "advisories found",

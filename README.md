@@ -66,6 +66,20 @@ describe a change that never landed. It carries no timestamps or ids, so it sits
 in the cached prefix: measured at 12,582 tokens read from cache on a second
 spawn. See `SPEC.md` § 10.
 
+**Two isolation boundaries, for two different things.** The OS sandbox covers
+what the *agents* do — kernel-enforced over Bash and every child process.
+`runtime.sandbox: container` covers what the *harness* runs on the repository's
+behalf: worktree setup, the test sensor, and the test run before an automatic
+merge. That last one executes code the agents just wrote, moments before it
+reaches the default branch, and on the host it had no isolation at all.
+
+Measured inside a `docker sandbox`: `~/.ssh` and `~/.aws/credentials` are simply
+not present, and egress is default-deny — an allowlisted host answers 200, an
+unlisted one 403. Startup refuses if Docker is unreachable, and refuses again if
+the repository's test command passes on the host but fails inside, because a
+sandbox that cannot build the repo would make a healthy project look permanently
+broken.
+
 **Security is layered, and the layers do different jobs.** The OS sandbox
 (macOS Seatbelt, Linux/WSL2) is the only real enforcement over Bash — a regex
 cannot make a shell safe — and it runs with `allowUnsandboxedCommands: false`,

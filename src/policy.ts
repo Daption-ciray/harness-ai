@@ -101,6 +101,11 @@ export const PolicySchema = z.object({
      * `container` is a stronger future option; `none` is an explicit opt-out.
      */
     sandbox: z.enum(["none", "os", "container"]).default("os"),
+    /**
+     * Image for `sandbox: container`. A container is a different machine, and
+     * the default agent image will not carry every repository's toolchain.
+     */
+    sandbox_image: z.string().optional(),
     max_concurrent_builders: z.number().int().positive().default(4),
     tick_seconds: z.number().int().positive().default(60),
     lease_ttl_seconds: z.number().int().positive().default(900),

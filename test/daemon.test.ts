@@ -3,6 +3,7 @@ import { existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { scriptedRunner, type ScriptedStep } from "../src/agent-runner.ts";
+import { hostExecutor } from "../src/exec.ts";
 import { readState, tick, writeState, type Tick } from "../src/daemon.ts";
 import { readAll } from "../src/events.ts";
 import { memoryForge, type MemoryForge } from "../src/github.ts";
@@ -36,6 +37,7 @@ function harness(steps: ScriptedStep[], over: Partial<Policy> = {}) {
   const ctx: Tick = {
     policy: merged, paths, state: readState(paths.stateFile), count: 0,
     runner: scriptedRunner(steps), forge: memoryForge(),
+    exec: hostExecutor(),
   };
   const pump = async (times: number) => {
     for (let i = 0; i < times; i++) {

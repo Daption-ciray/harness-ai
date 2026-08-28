@@ -244,6 +244,47 @@ bizim ekran:  ALLOWED
 dosya:        yazılmadı
 ```
 
+### `runtime.sandbox: container` — ikinci sınır
+
+OS sandbox **ajanların** yaptığını kapsıyor. Ama harness'ın kendisi de hedef
+repo'nun kodunu alt süreç olarak çalıştırıyor, ve orası kapsam dışıydı:
+
+| Nerede | Ne çalışıyor | Risk |
+|---|---|---|
+| `worktree_setup_cmd` | policy'nin komutu | düşük |
+| `broken_tests` sensörü | senin kodun, main'de | orta |
+| **merge öncesi test koşusu** | **ajanların az önce yazdığı kod** | **yüksek** |
+
+Üçüncüsü `main`'e girmesine dakikalar kala, host'ta, izolasyonsuz koşuyordu.
+`container` modu üçünü de `docker sandbox`'a taşıyor.
+
+**Ölçüldü, varsayılmadı:**
+
+```
+~/.ssh, ~/.aws/credentials   →  içeride yok (kendi home'u var)
+github.com   (allowlist'te)  →  200
+example.com  (değil)         →  403
+```
+
+`never_read` deny listesiyle korumaya çalıştığım dosyalar orada **hiç mevcut
+değil** — yapısal izolasyon, listeden güçlü. Ve Docker proxy'si varsayılan-reddet
+uyguluyor; OS sandbox'ın belgelediğim TLS/domain-fronting kalıntı riskini kapatıyor.
+
+**İki başlangıç reddi, ikisi de fail-closed:**
+
+1. Docker'a ulaşılamıyorsa başlamaz. (`docker sandbox version` daemon olmadan da
+   cevap veriyor — plugin'in varlığını kontrol etmek yetmez, `ls` gerekiyor.
+   Yanlışını 5 dakikalık bir asılmayla öğrendim.)
+2. Repo'nun test komutu host'ta geçip sandbox'ta patlıyorsa başlamaz. Container
+   farklı bir makine; toolchain uymuyorsa harness sağlam bir repo'yu **kalıcı
+   bozuk** okur: sensör döngüde hayalet "suite kırmızı" görevi üretir ve her
+   otomatik merge asla geçemeyecek bir testle bloke olur. `runtime.sandbox_image`
+   bunun içindir.
+
+**Worktree'ler repo içine taşındı** (`.harness-worktrees/`, gitignore'lu):
+`docker sandbox` tek bir workspace mount ediyor, ve en çok izolasyon gereken
+koşu bir worktree'de oluyor.
+
 ### Kalan risk (dürüstçe)
 
 - Sandbox proxy'si TLS'i sonlandırmıyor; `allowedDomains` istemcinin bildirdiği

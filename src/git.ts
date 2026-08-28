@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { cleanEnv } from "./env.ts";
+import type { CommandExecutor } from "./exec.ts";
 
 export class GitError extends Error {}
 
@@ -108,16 +108,13 @@ export function push(dir: string, branch: string): void {
  * Best effort: a failing setup must not sink the task, it shows up as a failing
  * test instead, which is the signal we want anyway.
  */
-export function runWorktreeSetup(dir: string, repoRoot: string, command: string | undefined): string | null {
+export function runWorktreeSetup(
+  dir: string, repoRoot: string, command: string | undefined, exec: CommandExecutor,
+): string | null {
   if (!command) return null;
-  try {
-    execFileSync(command, {
-      cwd: dir, shell: true, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"],
-      env: cleanEnv({ HARNESS_REPO_ROOT: repoRoot }),
-    });
-    return null;
-  } catch (e) {
-    return (e as { stderr?: string; message: string }).stderr || (e as Error).message;
-  }
+  const result = exec({
+    cwd: dir, command, env: { HARNESS_REPO_ROOT: repoRoot }, timeoutMs: 5 * 60_000,
+  });
+  return result.ok ? null : result.output.split("\n").slice(-3).join("\n");
 }
 

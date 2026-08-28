@@ -5,6 +5,7 @@ import {
   runWorktreeSetup, untrackedFiles,
 } from "./git.ts";
 import type { Forge } from "./github.ts";
+import type { CommandExecutor } from "./exec.ts";
 import { emit, readAll, type HarnessEvent } from "./events.ts";
 import type { Paths } from "./paths.ts";
 import type { Policy } from "./policy.ts";
@@ -22,7 +23,11 @@ import { concernsFor, currentRevision, detectStall, pendingVerifiers } from "./v
 import type { Finding } from "./domain.ts";
 import type { Role } from "./policy.ts";
 
-export type Ctx = { policy: Policy; paths: Paths; runner: AgentRunner; forge: Forge };
+export type Ctx = {
+  policy: Policy; paths: Paths; runner: AgentRunner; forge: Forge;
+  /** Where the target repository's own commands run: host, or sandbox. */
+  exec: CommandExecutor;
+};
 
 type PlanOutput = { scope?: string[]; acceptance?: string[]; steps?: string[]; blocked?: string };
 type DevopsOutput = { commit_message?: string; pr_title?: string; ready?: boolean; concerns?: string[] };
@@ -141,7 +146,7 @@ async function build(task: Task, ctx: Ctx): Promise<void> {
   // quietly drop the work from the commit.
   const { created } = ensureWorktree(ctx.paths.repoRoot, dir, branch, ctx.policy.repo.default_branch);
   if (created) {
-    const setupError = runWorktreeSetup(dir, ctx.paths.repoRoot, ctx.policy.repo.worktree_setup_cmd);
+    const setupError = runWorktreeSetup(dir, ctx.paths.repoRoot, ctx.policy.repo.worktree_setup_cmd, ctx.exec);
     emit(ctx.paths.eventsFile, task.id, "worktree_open", {
       branch, dir, setup_artifacts: untrackedFiles(dir), setup_error: setupError,
     });

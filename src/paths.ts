@@ -61,6 +61,9 @@ export function sidecarRoot(): string {
   return process.env.HARNESS_HOME || join(homedir(), ".harness");
 }
 
+/** Gitignored, and named so it is obviously not part of the project. */
+export const WORKTREES_DIR = ".harness-worktrees";
+
 export function resolvePaths(cwd = process.cwd()): Paths {
   const root = repoRoot(cwd);
   const slug = repoSlug(root);
@@ -79,6 +82,9 @@ export function resolvePaths(cwd = process.cwd()): Paths {
     contextFile: join(sidecar, "context.md"),
     repoProfileFile: join(sidecar, "repo.md"),
     lockFile: join(sidecar, "lock.json"),
-    worktreesDir: join(sidecar, "worktrees"),
+    // Inside the repo, not the sidecar: a sandbox is created around ONE
+    // workspace, and the run that most needs isolating — the branch's own
+    // tests, on code the agents just wrote — happens in a worktree.
+    worktreesDir: join(root, WORKTREES_DIR),
   };
 }

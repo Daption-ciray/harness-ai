@@ -1,5 +1,6 @@
 import { sdkRunner } from "../agent-runner.ts";
 import { ghForge } from "../github.ts";
+import { executorFor } from "../exec.ts";
 import { readFileSync } from "node:fs";
 import { HUMAN_STATES, isActiveState, type Origin } from "../domain.ts";
 import { emit, readAll } from "../events.ts";
@@ -103,7 +104,7 @@ export async function runOnce(cwd: string, id?: string): Promise<string> {
   if (!task) return id ? `no such task: ${id}` : "nothing to advance";
 
   const before = task.state;
-  const ctx: Ctx = { policy, paths, runner: sdkRunner, forge: ghForge };
+  const ctx: Ctx = { policy, paths, runner: sdkRunner, forge: ghForge, exec: executorFor(policy, paths) };
   try {
     const after = await withLock(paths.lockFile, "harness run", () => advance(task, ctx));
     return `${after.id}  ${before} → ${after.state}  ${money(after.cost_usd)}` +
