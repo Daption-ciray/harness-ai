@@ -95,7 +95,9 @@ budget:
   on_exceed: pause
 
 merge:
-  auto: false # Phase 7 turns this on; until then everything escalates
+  # Off by design, not because it is unfinished. Turning it on is your
+  # deliberate act — and even then the first 20 merges still go to you.
+  auto: false
   max_pending_escalated: 3
   escalate_when:
     - first_n_merges: 20 # autonomy is earned, not granted
