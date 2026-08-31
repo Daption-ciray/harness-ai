@@ -1,0 +1,829 @@
+{
+  "name": "harness · coordinator",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 1
+            }
+          ]
+        }
+      },
+      "id": "Every minute-10",
+      "name": "Every minute",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "base",
+              "name": "baseUrl",
+              "value": "http://127.0.0.1:7788",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "Where harness is-11",
+      "name": "Where harness is",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        200,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $json.baseUrl }}/v1/tasks",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": false,
+        "options": {
+          "response": {
+            "response": {
+              "neverError": true
+            }
+          },
+          "timeout": 1800000
+        }
+      },
+      "id": "harness · tasks-12",
+      "name": "harness · tasks",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        400,
+        0
+      ],
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "fieldToSplitOut": "data",
+        "options": {}
+      },
+      "id": "One task at a time-13",
+      "name": "One task at a time",
+      "type": "n8n-nodes-base.splitOut",
+      "typeVersion": 1,
+      "position": [
+        600,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// What a person asked for goes first, then oldest first — the same order\n// the built-in daemon uses. One task per tick keeps a long step from\n// holding the loop.\nconst ACTIVE = ['queued', 'planned', 'verifying', 'scribing', 'integrating', 'awaiting_merge'];\nconst baseUrl = $('Where harness is').first().json.baseUrl;\nconst tasks = items.map(i => i.json).filter(t => ACTIVE.includes(t.state));\ntasks.sort((a, b) =>\n  Number(b.source === 'human') - Number(a.source === 'human') ||\n  a.created_at.localeCompare(b.created_at));\nif (!tasks.length) return [];\nreturn [{ json: { ...tasks[0], taskId: tasks[0].id, baseUrl } }];"
+      },
+      "id": "Pick the next one-14",
+      "name": "Pick the next one",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        800,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "version": 2,
+                  "typeValidation": "loose"
+                },
+                "combinator": "and",
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.state }}",
+                    "rightValue": "queued",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ]
+              },
+              "outputKey": "queued"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "version": 2,
+                  "typeValidation": "loose"
+                },
+                "combinator": "and",
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.state }}",
+                    "rightValue": "planned",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ]
+              },
+              "outputKey": "planned"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "version": 2,
+                  "typeValidation": "loose"
+                },
+                "combinator": "and",
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.state }}",
+                    "rightValue": "verifying",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ]
+              },
+              "outputKey": "verifying"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "version": 2,
+                  "typeValidation": "loose"
+                },
+                "combinator": "and",
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.state }}",
+                    "rightValue": "scribing",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ]
+              },
+              "outputKey": "scribing"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "version": 2,
+                  "typeValidation": "loose"
+                },
+                "combinator": "and",
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.state }}",
+                    "rightValue": "integrating",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ]
+              },
+              "outputKey": "integrating"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "version": 2,
+                  "typeValidation": "loose"
+                },
+                "combinator": "and",
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.state }}",
+                    "rightValue": "awaiting_merge",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ]
+              },
+              "outputKey": "awaiting_merge"
+            }
+          ]
+        },
+        "options": {
+          "fallbackOutput": "none"
+        }
+      },
+      "id": "What does it need?-15",
+      "name": "What does it need?",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [
+        1020,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "mode": "list",
+          "value": "",
+          "cachedResultName": "harness · role · planner"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "taskId": "={{ $json.taskId }}",
+            "baseUrl": "={{ $json.baseUrl }}"
+          }
+        },
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      },
+      "id": "Plan it-16",
+      "name": "Plan it",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        1300,
+        -320
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.baseUrl }}/v1/tasks/{{ $json.taskId }}/worktree",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": false,
+        "options": {
+          "response": {
+            "response": {
+              "neverError": true
+            }
+          },
+          "timeout": 1800000
+        }
+      },
+      "id": "harness · worktree-17",
+      "name": "harness · worktree",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1300,
+        -180
+      ],
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "mode": "list",
+          "value": "",
+          "cachedResultName": "harness · role · builder"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "taskId": "={{ $json.taskId }}",
+            "baseUrl": "={{ $json.baseUrl }}"
+          }
+        },
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      },
+      "id": "Build it-18",
+      "name": "Build it",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        1540,
+        -180
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $json.baseUrl }}/v1/tasks/{{ $json.taskId }}/verifiers",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": false,
+        "options": {
+          "response": {
+            "response": {
+              "neverError": true
+            }
+          },
+          "timeout": 1800000
+        }
+      },
+      "id": "harness · who still owes a verdict-19",
+      "name": "harness · who still owes a verdict",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1300,
+        -40
+      ],
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "version": 2,
+                  "typeValidation": "loose"
+                },
+                "combinator": "and",
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.pending[0] }}",
+                    "rightValue": "adversary",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ]
+              },
+              "outputKey": "adversary"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "version": 2,
+                  "typeValidation": "loose"
+                },
+                "combinator": "and",
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.pending[0] }}",
+                    "rightValue": "review",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ]
+              },
+              "outputKey": "review"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "version": 2,
+                  "typeValidation": "loose"
+                },
+                "combinator": "and",
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.pending[0] }}",
+                    "rightValue": "security",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ]
+              },
+              "outputKey": "security"
+            }
+          ]
+        },
+        "options": {
+          "fallbackOutput": "extra",
+          "renameFallbackOutput": "all reported"
+        }
+      },
+      "id": "Which verifier?-1a",
+      "name": "Which verifier?",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [
+        1540,
+        -40
+      ]
+    },
+    {
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "mode": "list",
+          "value": "",
+          "cachedResultName": "harness · role · adversary"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "taskId": "={{ $json.taskId }}",
+            "baseUrl": "={{ $json.baseUrl }}"
+          }
+        },
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      },
+      "id": "Try to break it-1b",
+      "name": "Try to break it",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        1800,
+        -160
+      ]
+    },
+    {
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "mode": "list",
+          "value": "",
+          "cachedResultName": "harness · role · review"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "taskId": "={{ $json.taskId }}",
+            "baseUrl": "={{ $json.baseUrl }}"
+          }
+        },
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      },
+      "id": "Review it-1c",
+      "name": "Review it",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        1800,
+        -60
+      ]
+    },
+    {
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "mode": "list",
+          "value": "",
+          "cachedResultName": "harness · role · security"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "taskId": "={{ $json.taskId }}",
+            "baseUrl": "={{ $json.baseUrl }}"
+          }
+        },
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      },
+      "id": "Security review-1d",
+      "name": "Security review",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        1800,
+        40
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.baseUrl }}/v1/tasks/{{ $('Pick the next one').first().json.taskId }}/verified",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": false,
+        "options": {
+          "response": {
+            "response": {
+              "neverError": true
+            }
+          },
+          "timeout": 1800000
+        }
+      },
+      "id": "harness · verified-1e",
+      "name": "harness · verified",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1800,
+        140
+      ],
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "mode": "list",
+          "value": "",
+          "cachedResultName": "harness · role · scribe"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "taskId": "={{ $json.taskId }}",
+            "baseUrl": "={{ $json.baseUrl }}"
+          }
+        },
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      },
+      "id": "Record why-1f",
+      "name": "Record why",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        1300,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "mode": "list",
+          "value": "",
+          "cachedResultName": "harness · role · devops"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "taskId": "={{ $json.taskId }}",
+            "baseUrl": "={{ $json.baseUrl }}"
+          }
+        },
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      },
+      "id": "Judge the change-1g",
+      "name": "Judge the change",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        1300,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.baseUrl }}/v1/tasks/{{ $('Pick the next one').first().json.taskId }}/integrate",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json) }}",
+        "options": {
+          "response": {
+            "response": {
+              "neverError": true
+            }
+          },
+          "timeout": 1800000
+        }
+      },
+      "id": "harness · integrate-1h",
+      "name": "harness · integrate",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1540,
+        340
+      ],
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.baseUrl }}/v1/tasks/{{ $json.taskId }}/merge",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": false,
+        "options": {
+          "response": {
+            "response": {
+              "neverError": true
+            }
+          },
+          "timeout": 1800000
+        }
+      },
+      "id": "harness · merge-1i",
+      "name": "harness · merge",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1300,
+        480
+      ],
+      "alwaysOutputData": true
+    }
+  ],
+  "connections": {
+    "Every minute": {
+      "main": [
+        [
+          {
+            "node": "Where harness is",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Where harness is": {
+      "main": [
+        [
+          {
+            "node": "harness · tasks",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "harness · tasks": {
+      "main": [
+        [
+          {
+            "node": "One task at a time",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "One task at a time": {
+      "main": [
+        [
+          {
+            "node": "Pick the next one",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Pick the next one": {
+      "main": [
+        [
+          {
+            "node": "What does it need?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "What does it need?": {
+      "main": [
+        [
+          {
+            "node": "Plan it",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "harness · worktree",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "harness · who still owes a verdict",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Record why",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Judge the change",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "harness · merge",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "harness · worktree": {
+      "main": [
+        [
+          {
+            "node": "Build it",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "harness · who still owes a verdict": {
+      "main": [
+        [
+          {
+            "node": "Which verifier?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Which verifier?": {
+      "main": [
+        [
+          {
+            "node": "Try to break it",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Review it",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Security review",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "harness · verified",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Judge the change": {
+      "main": [
+        [
+          {
+            "node": "harness · integrate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "active": false
+}
